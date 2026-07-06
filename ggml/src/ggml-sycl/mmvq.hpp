@@ -25,19 +25,25 @@ void ggml_sycl_op_mul_mat_vec_q(
     const dpct::queue_ptr &stream);
 
 // Requires standard (non-reorder) block layout for src0.
+// Fused MoE expert GEMV over all (token, expert-slot) routed pairs of a decode-sized batch.
 // Returns false if src0_type isn't handled; caller should fall back.
 bool ggml_sycl_mul_mat_vec_q_id(
     enum ggml_type     src0_type,
     const void *       vx_base,             // start of stacked expert weights
-    const void *       vy,                  // pre-quantized src1 (Q8_1)
-    const int32_t *    ids_dev,             // device-side int32, length n_experts_used
+    const void *       vy,                  // pre-quantized src1 (Q8_1), one row per (token, src1-row)
+    const int32_t *    ids_dev,             // device-side int32 [n_ids, n_tokens] with strides ids_s0/ids_s1
     float *            dst_base,
     int                ncols,
     int                nrows,
-    int                n_experts_used,
+    int                n_ids,               // experts used per token
+    int                n_tokens,
+    int                ne11,                // src1 rows per token: 1 (shared) or n_ids (per-slot)
+    size_t             ids_s0,              // ids stride between slots, in elements
+    size_t             ids_s1,              // ids stride between tokens, in elements
     size_t             expert_weight_stride, // bytes between experts in vx_base
-    size_t             dst_row_stride,       // bytes between dst rows
-    size_t             src1_row_stride,      // 0 = shared src1, else per-expert stride in bytes
+    size_t             dst_slot_stride,      // bytes between dst rows of one token (dst->nb[1])
+    size_t             dst_token_stride,     // bytes between dst token planes (dst->nb[2])
+    size_t             src1_qrow_stride,     // bytes per quantized src1 row
     dpct::queue_ptr    stream);
 
 // Reorder (SoA) variant of the fused MoE expert GEMV.
@@ -51,10 +57,15 @@ bool ggml_sycl_mul_mat_vec_q_id_reorder(
     float *            dst_base,
     int                ncols,
     int                nrows,
-    int                n_experts_used,
+    int                n_ids,
+    int                n_tokens,
+    int                ne11,
+    size_t             ids_s0,
+    size_t             ids_s1,
     size_t             expert_weight_stride,
-    size_t             dst_row_stride,
-    size_t             src1_row_stride,
+    size_t             dst_slot_stride,
+    size_t             dst_token_stride,
+    size_t             src1_qrow_stride,
     dpct::queue_ptr    stream);
 
 #endif // GGML_SYCL_MMVQ_HPP
