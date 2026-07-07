@@ -7668,6 +7668,11 @@ static const ggml_type other_types[] = {
     GGML_TYPE_BF16,
 };
 
+static const ggml_type turboq_types[] = {
+    GGML_TYPE_TBQ3_0,
+    GGML_TYPE_TBQ4_0,
+};
+
 #ifdef _MSC_VER
 // Workaround long compile time with msvc
 #pragma optimize("", off)
@@ -7757,6 +7762,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_get_rows(GGML_TYPE_I32, 256, 5, 4, b, 1, v));
         }
     }
+    for (ggml_type type : turboq_types) {
+        for (bool v : {false, true}) {
+            test_cases.emplace_back(new test_get_rows(type, 256, 5, 4, 1, 1, v));
+        }
+    }
 
     test_cases.emplace_back(new test_get_rows_back(GGML_TYPE_F32, 1, 8, 2, 1, false));
     test_cases.emplace_back(new test_get_rows_back(GGML_TYPE_F32, 1, 70000, 4, 1, false)); // row count > CUDA grid-y limit (65535)
@@ -7767,6 +7777,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
     for (bool v : {false, true}) {
         test_cases.emplace_back(new test_get_rows_back(GGML_TYPE_I32, 256, 5, 4, 1, v));
+    }
+    for (ggml_type type : turboq_types) {
+        for (bool v : {false, true}) {
+            test_cases.emplace_back(new test_get_rows_back(type, 256, 5, 4, 1, v));
+        }
     }
 
     test_cases.emplace_back(new test_set_rows(GGML_TYPE_F32, GGML_TYPE_I64, { 1, 8, 1, 3 }, { 1, 1 }, 2, false));
@@ -7785,6 +7800,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                     test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 33, 5, 1, b }, { 2, 3, }, 1, v));
                 }
             }
+        }
+    }
+    for (ggml_type type : turboq_types) {
+        for (bool v : {false, true}) {
+            test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 256, 5, 1, 3 }, { 1, 1 }, 1, v));
+            test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 256, 11, 1, 1 }, { 2, 3 }, 7, v));
         }
     }
 
@@ -8175,9 +8196,29 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
     for (ggml_type type_src : all_types) {
-        for (ggml_type type_dst : {GGML_TYPE_F32}) {
+        if (!ggml_is_quantized(type_src)) {
+            continue;
+        }
+        test_cases.emplace_back(new test_cpy(type_src, GGML_TYPE_F32, {256, 4, 4, 4}));
+        test_cases.emplace_back(new test_cpy(type_src, GGML_TYPE_F32, {256, 2, 3, 4}, {0, 2, 1, 3})); // cpy by rows
+    }
+    for (ggml_type type : turboq_types) {
+        test_cases.emplace_back(new test_cpy(type, GGML_TYPE_F32, {256, 4, 4, 4}));
+        test_cases.emplace_back(new test_cpy(type, GGML_TYPE_F32, {256, 2, 3, 4}, {0, 2, 1, 3})); // cpy by rows
+    }
+    for (ggml_type type_src : all_types) {
+        if (!ggml_is_quantized(type_src)) {
+            continue;
+        }
+        for (ggml_type type_dst : {GGML_TYPE_F16, GGML_TYPE_BF16}) {
             test_cases.emplace_back(new test_cpy(type_src, type_dst, {256, 4, 4, 4}));
             test_cases.emplace_back(new test_cpy(type_src, type_dst, {256, 2, 3, 4}, {-1,-1,-1,-1}, {0, 2, 1, 3})); // cpy by rows
+        }
+    }
+    for (ggml_type type : turboq_types) {
+        for (ggml_type type_dst : {GGML_TYPE_F16, GGML_TYPE_BF16}) {
+            test_cases.emplace_back(new test_cpy(type, type_dst, {256, 4, 4, 4}));
+            test_cases.emplace_back(new test_cpy(type, type_dst, {256, 2, 3, 4}, {-1,-1,-1,-1}, {0, 2, 1, 3})); // cpy by rows
         }
     }
     for (ggml_type type_src : {GGML_TYPE_F16, GGML_TYPE_F32}) {
@@ -8188,6 +8229,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_cpy(GGML_TYPE_F32, GGML_TYPE_I32, {256, 2, 3, 4}));
     test_cases.emplace_back(new test_cpy(GGML_TYPE_F32, GGML_TYPE_I32, {256, 2, 3, 4}, {-1,-1,-1,-1}, {1, 0, 2, 3}));
     test_cases.emplace_back(new test_cpy(GGML_TYPE_I32, GGML_TYPE_F32, {256, 2, 3, 4}));
+    for (ggml_type type : turboq_types) {
+        test_cases.emplace_back(new test_cpy(type, type, {256, 4, 4, 4}));
+        test_cases.emplace_back(new test_cpy(type, type, {256, 2, 3, 4}, {-1,-1,-1,-1}, {0, 2, 1, 3}));
+    }
     test_cases.emplace_back(new test_cpy(GGML_TYPE_I32, GGML_TYPE_F32, {256, 2, 3, 4}, {-1,-1,-1,-1}, {1, 0, 2, 3}));
     test_cases.emplace_back(new test_cpy(GGML_TYPE_F16, GGML_TYPE_F16, {256, 4, 3, 1}, {-1,-1,-1,-1}, {0, 0, 0, 0}, {0, 0, 0, 0}, true));
     test_cases.emplace_back(new test_cpy(GGML_TYPE_F32, GGML_TYPE_F32, {256, 4, 3, 1}, {-1,-1,-1,-1}, {0, 0, 0, 0}, {0, 0, 0, 0}, true));
@@ -9498,6 +9543,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
                 test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 8, {nr, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
             }
         }
+    }
+    for (ggml_type type : turboq_types) {
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {1, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, type));
     }
 
     for (int col : {8192, 16384, 32768, 65536, 131072, 262144, 524288}) {
