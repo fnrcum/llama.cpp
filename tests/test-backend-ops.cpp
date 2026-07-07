@@ -8200,11 +8200,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             continue;
         }
         test_cases.emplace_back(new test_cpy(type_src, GGML_TYPE_F32, {256, 4, 4, 4}));
-        test_cases.emplace_back(new test_cpy(type_src, GGML_TYPE_F32, {256, 2, 3, 4}, {0, 2, 1, 3})); // cpy by rows
+        test_cases.emplace_back(new test_cpy(type_src, GGML_TYPE_F32, {256, 2, 3, 4}, {-1,-1,-1,-1}, {0, 2, 1, 3})); // cpy by rows
     }
     for (ggml_type type : turboq_types) {
         test_cases.emplace_back(new test_cpy(type, GGML_TYPE_F32, {256, 4, 4, 4}));
-        test_cases.emplace_back(new test_cpy(type, GGML_TYPE_F32, {256, 2, 3, 4}, {0, 2, 1, 3})); // cpy by rows
+        test_cases.emplace_back(new test_cpy(type, GGML_TYPE_F32, {256, 2, 3, 4}, {-1,-1,-1,-1}, {0, 2, 1, 3})); // cpy by rows
     }
     for (ggml_type type_src : all_types) {
         if (!ggml_is_quantized(type_src)) {
