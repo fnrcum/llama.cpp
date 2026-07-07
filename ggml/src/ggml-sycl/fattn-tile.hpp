@@ -1173,6 +1173,15 @@ static void launch_fattn_tile_switch_ncols2(ggml_backend_sycl_context & ctx, ggm
             launch_fattn_tile_switch_ncols1<DKQ, DV, 16, use_logit_softcap>(ctx, dst);
             return;
         }
+        // gqa_ratio == 8 (e.g. gemma4 full-attention layers: 16 Q heads over 2 KV heads with
+        // head dim 512): pack all 8 Q heads per KV head into one workgroup so each K/V element
+        // is read once instead of twice (ncols2 = 4 twice over). Decode is KV-bandwidth-bound.
+        if constexpr (DKQ == DV) {
+            if (use_gqa_opt && gqa_ratio % 8 == 0) {
+                launch_fattn_tile_switch_ncols1<DKQ, DV, 8, use_logit_softcap>(ctx, dst);
+                return;
+            }
+        }
         if (use_gqa_opt && gqa_ratio % 4 == 0) {
             launch_fattn_tile_switch_ncols1<DKQ, DV, 4, use_logit_softcap>(ctx, dst);
             return;
