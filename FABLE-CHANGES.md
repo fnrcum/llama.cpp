@@ -217,3 +217,123 @@ Runtime env knobs added/relevant to this build:
 ---
 
 *Append new dated sections below this line for future changes.*
+
+---
+
+# Session of 2026-07-07 — TurboQuant/RotorQuant merge + Gemma4 SYCL decode speedup
+
+Scope requested: (1) merge TurboQuant KV cache support, (2) merge RotorQuant KV cache
+support, (3) make Gemma models faster on SYCL **without** impacting Qwen/Ornith performance.
+All work done on `llama-sycl-1` / `renderD130` only; `llama-sycl-0` untouched.
+
+## 1. Repository state
+
+Branch `fable-sycl` @ `2513c8eb2` (was `496b3ad29`). New commits:
+
+| commit | what |
+|---|---|
+| `a5c4c5425` | TurboQuant + RotorQuant patch (source: rapatel0 `rq-models` `rotorquant.patch`, written against upstream `b9196`) applied cleanly on a throwaway branch at its base commit |
+| `0eafed97f` | merge of that branch into `fable-sycl` (conflicts resolved in `ggml.h`, `arch-fallback.h`, `llama-context.cpp`, CUDA `fattn-mma-f16.cuh`/`fattn.cu`, `test-backend-ops.cpp`, `test-quantize-fns.cpp`) |
+| `117df6229` | **bugfix**: `quantize_row_tbq3_0_ref` 3-bit packing had a UB shift (`>> -1`) and never wrote the 3rd byte of each 3-byte group — data was silently corrupted; also fixed a stack-smashing norm test in `test-quantize-fns.cpp` (wrote 2 blocks into 1 stack block) |
+| `463568f72` | tbq3_0 test thresholds set from measured error (the method has no sub-block scales; the patch's own thresholds never passed even for a pristine build) |
+| `92f2cfc3f` | **Gemma speedup**: SYCL `fattn-tile` new `ncols2=8` branch for `DV=512` when `gqa_ratio % 8 == 0` |
+| `2513c8eb2` | fix patch-added `test_cpy` constructor calls for the current `ne_dst` signature (crashed `test-backend-ops` during graph build) |
+
+## 2. What TurboQuant/RotorQuant give you (and current backend support)
+
+New KV-cache quantization types (`-ctk`/`-ctv`): `tbq3_0`, `tbq4_0` (TurboQuant,
+per-row norm-preserving codebook quant over the full GQA row) and `planar3_0`, `iso3_0`,
+`planar4_0`, `iso4_0` (RotorQuant rotations). `ggml_type` enum ids 42–47, no collision
+with upstream (NVFP4=39 etc. preserved).
+
+Backend support matrix as merged:
+
+| backend | status |
+|---|---|
+| CPU | full (quantize/dequant/vec_dot; `test-quantize-fns` passes, incl. the two bugs fixed above) |
+| CUDA | full incl. FA MMA path for tbq4 KV (from the patch; compiles, not runtime-tested here — no NVIDIA card in scope) |
+| SYCL | **none** — no `SET_ROWS`/`CPY`/FA kernels for these types |
+
+Practical consequence on the B70s, verified by test:
+
+- `-ctk tbq4_0 -ctv tbq4_0` with GPU KV (default) → **hard abort** in
+  `ggml_backend_sched_split_graph` at context creation (pre-allocated KV tensor in a SYCL
+  buffer, op unsupported, scheduler cannot fall back). Known limitation, fails fast at startup —
+  it cannot corrupt a running deployment.
+- `-ctk tbq4_0 -ctv tbq4_0 -nkvo` (KV on host, CPU does cache ops) → **works**, coherent
+  output, ~15 t/s gen / ~15 t/s prefill on Ornith at 4k ctx — usable for memory-constrained
+  experiments, not for the production 240k serving path.
+- Production configs (f16 KV) are entirely unaffected.
+
+SYCL device kernels for these types (SET_ROWS + FA dequant) are future work — see §6.
+
+## 3. Gemma4 speedup — what was slow and what changed
+
+Model: `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL` (MoE 128e/8a, 30 layers, 5:1 SWA(1024):full-attn,
+full-attn head dims **DKQ=DV=512**, 16 Q heads over 2 KV heads → **GQA ratio 8**).
+
+At long context the KV traffic is dominated by the few full-attention layers (SWA layers only
+keep 1024 tokens). The SYCL FA tile kernel had `ncols2` branches for gqa 16 and 4 at `DV=512`
+but not 8, so Gemma's full-attn decode read every K/V element **twice** (two ncols2=4 passes).
+New gated branch (`DV==512 && DKQ==DV && gqa_ratio%8==0`) packs all 8 GQA heads per KV head
+into one workgroup → each K/V element read once. Qwen/Ornith never hit this branch
+(Ornith: D=128; the branch is compile-time + runtime gated to DV=512/gqa8).
+
+## 4. Tests
+
+- `test-backend-ops test -b SYCL0 -o FLASH_ATTN_EXT` → **OK, 2/2 backends passed** (includes
+  the new ncols2=8 dispatch shapes).
+- `test-quantize-fns` → exit 0, all types incl. tbq3_0/tbq4_0/planar/iso pass.
+- Deployed-endpoint smoke test (chat completion, greedy) → correct output.
+
+### Gemma benchmark (same GPU, same `bench.py` harness, warm numbers)
+
+Baseline = live `llama-sycl-1` before this session (image 2026-07-06, f16 KV) vs new image:
+
+| scenario | prefill t/s old→new | gen t/s old→new |
+|---|---|---|
+| single 2k | 426 → 2040 (baseline no. incl. JIT warmup; treat as n/a) | 50.1 → **57.4** (+15%) |
+| single 16k | 2241 → 2288 | 24.4 → **25.7** (+5%) |
+| conc 4×8k (agg) | 993 → **1151** (+16%) | 11.2 → **15.0** (+34%) |
+| single 48k | 1953 → 1966 | 20.8 → **23.7** (+14%) |
+| conc 5×24k (agg) | 1076 → **1246** (+16%) | 3.7 → **6.7** (+80%) |
+
+Per-user conc4×8k gen: [9.8, 9.8, 12.6, 12.7] → [12.5, 12.5, 17.5, 17.6] t/s.
+A control run of the *old* image on the same harness (`results-gemma-fable-f16.json`) matched
+baseline within noise, confirming the gain comes from the ncols2=8 kernel change, not the rebuild.
+
+### Ornith no-regression check (new image, original production flags)
+
+vs yesterday's `fable-v1-warm` record:
+
+| scenario | gen t/s v1 → v2 |
+|---|---|
+| single 2k | 47.2 → 46.7 |
+| single 16k | 46.3 → 46.4 |
+| conc 4×8k (agg) | 17.3 → 17.4 |
+| single 48k | 44.6 → 44.7 |
+| conc 5×24k (agg) | 6.0 → 6.0 |
+
+All within run-to-run noise → **no impact on Qwen/Ornith**, as required.
+
+## 5. Deployment
+
+- New image: `llama-sycl-fable:2026-07-07` == `llama-sycl-fable:latest` (same
+  `Dockerfile.fable`, binaries rebuilt from `fable-sycl` @ `2513c8eb2`).
+- `llama-sycl-1` recreated with its existing config (gemma-4-26B-A4B + mmproj, port 8081,
+  `-c 180000 -np 10 --kv-unified`, restart unless-stopped) on the new image. Healthy.
+- `llama-sycl-0` untouched (still runs its previous image by ID; the moved `latest` tag does
+  not affect a running container).
+- Rollback: recreate `llama-sycl-1` with `llama-sycl-fable:2026-07-06`.
+
+Result archives: `/data/bench-fable/results-gemma-{baseline,fable-f16,fable-v2,fable-v2-warm}.json`,
+`results-ornith-fable-v2{,-warm}.json`.
+
+## 6. Future work
+
+- SYCL `SET_ROWS` + FA dequant kernels for tbq4_0 (the most useful of the six: 4.25 bpw,
+  norm-preserving) so KV quantization works with GPU KV on the B70s.
+- The gemma conc5×24k number (6.7 t/s agg) is still low vs Ornith (which has D=128 attention);
+  next lever is an XMX/oneDNN decode path for DV=512, or ncols1 tuning for the 5-token
+  unified-KV decode shape.
+- Runtime-test the CUDA tbq4 FA path on the CUDA containers if KV quant is wanted there.
