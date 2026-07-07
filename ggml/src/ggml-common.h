@@ -277,6 +277,54 @@ typedef struct {
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
 
+// TurboQuant blocks
+
+// 3.0625 bpw (128-element blocks, FWHT rotation, 3-bit PolarQuant)
+#define QK_TBQ3 128
+typedef struct {
+    ggml_half d;
+    uint8_t qs[QK_TBQ3 * 3 / 8]; // 48 bytes
+} block_tbq3_0;
+static_assert(sizeof(block_tbq3_0) == sizeof(ggml_half) + QK_TBQ3 * 3 / 8, "wrong tbq3_0 block size/padding");
+
+// 4.125 bpw (128-element blocks, FWHT rotation, 4-bit PolarQuant)
+#define QK_TBQ4 128
+typedef struct {
+    ggml_half d;
+    uint8_t qs[QK_TBQ4 / 2];
+} block_tbq4_0;
+static_assert(sizeof(block_tbq4_0) == sizeof(ggml_half) + QK_TBQ4 / 2, "wrong tbq4_0 block size/padding");
+
+// PlanarQuant 3-bit: 2D Givens rotation + 2-bit scalar + 1-bit QJL
+// 50 bytes per 128 values = 3.125 bits/value
+#define QK_PLANAR3 128
+typedef struct {
+    ggml_half d;                      //  2 bytes: group norm (fp16)
+    uint8_t   qs[QK_PLANAR3 / 4];     // 32 bytes: 2-bit indices (4 per byte)
+    uint8_t   signs[QK_PLANAR3 / 8];  // 16 bytes: 1-bit signs
+} block_planar3_0;                     // 50 bytes total
+static_assert(sizeof(block_planar3_0) == sizeof(ggml_half) + QK_PLANAR3/4 + QK_PLANAR3/8, "wrong planar3_0 block size/padding");
+
+// IsoQuant 3-bit: quaternion 4D rotation + 2-bit scalar + 1-bit QJL
+// Same block layout as PlanarQuant 3-bit
+#define QK_ISO3 128
+typedef struct {
+    ggml_half d;
+    uint8_t   qs[QK_ISO3 / 4];
+    uint8_t   signs[QK_ISO3 / 8];
+} block_iso3_0;
+static_assert(sizeof(block_iso3_0) == sizeof(ggml_half) + QK_ISO3/4 + QK_ISO3/8, "wrong iso3_0 block size/padding");
+
+// PlanarQuant 4-bit: 2D Givens rotation + 4-bit nibble-packed
+// Reuses block_tbq4_0 layout (66 bytes: 2 norm + 64 qs)
+#define QK_PLANAR4 128
+typedef block_tbq4_0 block_planar4_0;
+
+// IsoQuant 4-bit: quaternion 4D rotation + 4-bit nibble-packed
+// Reuses block_tbq4_0 layout
+#define QK_ISO4 128
+typedef block_tbq4_0 block_iso4_0;
+
 //
 // Super-block quantization structures
 //
