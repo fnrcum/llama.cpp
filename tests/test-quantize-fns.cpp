@@ -135,12 +135,34 @@ static bool test_tbq3_codebook() {
 }
 
 static bool test_tbq3_norm_scaling() {
-    std::vector<float> x(QK_K, 1.0f);
-    block_tbq3_0 block = {};
+    // The whole point of the TurboQuant norm correction is that the reconstructed
+    // vector preserves the norm of the input: check ||dequant(quant(x))|| ~= ||x||.
+    // (The original test wrote QK_K elements into a single stack block — 2 blocks of
+    // QK_TBQ3=128 — smashing the stack, and checked a magic constant instead.)
+    std::vector<float> x(QK_K);
+    generate_data(0.0, x.size(), x.data());
 
-    quantize_row_tbq3_0_ref(x.data(), &block, QK_K);
+    std::vector<block_tbq3_0> blocks(QK_K / QK_TBQ3);
+    std::vector<float> y(QK_K);
 
-    return fabsf(ggml_fp16_to_fp32(block.d) - 16.0f) < 1e-3f;
+    quantize_row_tbq3_0_ref(x.data(), blocks.data(), QK_K);
+    dequantize_row_tbq3_0(blocks.data(), y.data(), QK_K);
+
+    for (size_t b = 0; b < blocks.size(); ++b) {
+        double norm_x = 0.0, norm_y = 0.0;
+        for (int j = 0; j < QK_TBQ3; ++j) {
+            const size_t i = b * QK_TBQ3 + j;
+            norm_x += (double) x[i] * x[i];
+            norm_y += (double) y[i] * y[i];
+        }
+        norm_x = sqrt(norm_x);
+        norm_y = sqrt(norm_y);
+        if (fabs(norm_y - norm_x) > 0.02 * norm_x) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 static int test_vec_dot_f32(bool verbose) {

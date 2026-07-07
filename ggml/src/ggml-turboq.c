@@ -551,15 +551,15 @@ void quantize_row_tbq3_0_ref(const float * GGML_RESTRICT x, block_tbq3_0 * GGML_
             indices[j] = idx;
         }
 
-        // Pack 8 × 3-bit values into 3 bytes
+        // Pack 8 × 3-bit values into 3 bytes (little-endian bit stream, matches dequantize_row_tbq3_0)
         memset(y[b].qs, 0, QK_TBQ3 * 3 / 8);
         for (int j = 0; j < QK_TBQ3; j++) {
-            int byte_off = (j / 8) * 3 + (j % 8) / 8 * 0; // simplified: j/8*3
-            // Repack: 8 values per 3 bytes, little-endian bit packing
-            int block = j / 8;
-            int bit = (j % 8) * 3;
-            y[b].qs[block * 3 + 0] |= (indices[j] & 0x7) << (bit < 8 ? bit : 0);
-            if (bit >= 8) y[b].qs[block * 3 + 1] |= ((indices[j] >> (8 - bit)) & 0x7);
+            const int group = j / 8;
+            const int bit   = (j % 8) * 3;           // 0..21 within the 3-byte group
+            const uint32_t val = (uint32_t)(indices[j] & 0x7) << bit;
+            y[b].qs[group * 3 + 0] |= (uint8_t)(val         & 0xFF);
+            y[b].qs[group * 3 + 1] |= (uint8_t)((val >>  8) & 0xFF);
+            y[b].qs[group * 3 + 2] |= (uint8_t)((val >> 16) & 0xFF);
         }
 
         // Norm correction: corrected = original / reconstruction norm
