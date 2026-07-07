@@ -2,9 +2,13 @@
 
 #include "ggml.h"
 #include "ggml-cpu.h"
+#include "../ggml/src/ggml-quants.h"
+#include "../ggml/src/ggml-turboq.h"
+#include "../ggml/src/ggml-turboq-tables.h"
 
 #undef NDEBUG
 #include <assert.h>
+#include <cstring>
 #include <math.h>
 #include <stdio.h>
 #include <string>
@@ -21,12 +25,19 @@ constexpr float MAX_QUANTIZATION_TOTAL_ERROR_TERNARY = 0.01f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_2BITS = 0.0075f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_3BITS = 0.0040f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_3BITS_XXS = 0.0050f;
+constexpr float MAX_QUANTIZATION_TOTAL_ERROR_TBQ4 = 0.0025f;
 constexpr float MAX_QUANTIZATION_TOTAL_ERROR_FP4 = 0.0030f;
 constexpr float MAX_DOT_PRODUCT_ERROR = 0.02f;
 constexpr float MAX_DOT_PRODUCT_ERROR_LOWBIT = 0.04f;
 constexpr float MAX_DOT_PRODUCT_ERROR_FP4 = 0.03f;
 constexpr float MAX_DOT_PRODUCT_ERROR_BINARY = 0.40f;
 constexpr float MAX_DOT_PRODUCT_ERROR_TERNARY = 0.15f;
+// tbq3_0 is a scale-free 3-bit rotation quantizer (FWHT + 8 Lloyd-Max centroids + block norm
+// correction, no per-sub-block scales and no QJL residual). Its distortion is inherently higher
+// than codebook types like iq3_xxs; thresholds below are measured values (+~50% margin) from the
+// fixed reference implementation.
+constexpr float MAX_QUANTIZATION_TOTAL_ERROR_TBQ3 = 0.02f;
+constexpr float MAX_DOT_PRODUCT_ERROR_TBQ3 = 0.30f;
 
 static const char* RESULT_STR[] = {"ok", "FAILED"};
 
@@ -102,6 +113,63 @@ static float dot_product_error(const ggml_type_traits * qfns, const ggml_type_tr
     return fabsf(result - dot_ref) / test_size;
 }
 
+static bool test_turboq_vec_dot_dispatch() {
+    for (ggml_type type : { GGML_TYPE_TBQ3_0, GGML_TYPE_TBQ4_0 }) {
+        const auto * qfns_cpu = ggml_get_type_traits_cpu(type);
+        if (qfns_cpu->vec_dot == nullptr || qfns_cpu->vec_dot_type != GGML_TYPE_Q8_K) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool test_tbq3_codebook() {
+    static const float expected[8] = {
+        -2.1520f, -1.3440f, -0.7560f, -0.2451f,
+         0.2451f,  0.7560f,  1.3440f,  2.1520f,
+    };
+
+    for (int i = 0; i < 8; ++i) {
+        if (fabsf(turboq_codebook_3bit[i] - expected[i]) > 1e-4f) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool test_tbq3_norm_scaling() {
+    // The whole point of the TurboQuant norm correction is that the reconstructed
+    // vector preserves the norm of the input: check ||dequant(quant(x))|| ~= ||x||.
+    // (The original test wrote QK_K elements into a single stack block — 2 blocks of
+    // QK_TBQ3=128 — smashing the stack, and checked a magic constant instead.)
+    std::vector<float> x(QK_K);
+    generate_data(0.0, x.size(), x.data());
+
+    std::vector<block_tbq3_0> blocks(QK_K / QK_TBQ3);
+    std::vector<float> y(QK_K);
+
+    quantize_row_tbq3_0_ref(x.data(), blocks.data(), QK_K);
+    dequantize_row_tbq3_0(blocks.data(), y.data(), QK_K);
+
+    for (size_t b = 0; b < blocks.size(); ++b) {
+        double norm_x = 0.0, norm_y = 0.0;
+        for (int j = 0; j < QK_TBQ3; ++j) {
+            const size_t i = b * QK_TBQ3 + j;
+            norm_x += (double) x[i] * x[i];
+            norm_y += (double) y[i] * y[i];
+        }
+        norm_x = sqrt(norm_x);
+        norm_y = sqrt(norm_y);
+        if (fabs(norm_y - norm_x) > 0.02 * norm_x) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static int test_vec_dot_f32(bool verbose) {
     const auto * f32 = ggml_get_type_traits_cpu(GGML_TYPE_F32);
     int num_failed = 0;
@@ -137,6 +205,26 @@ static int test_vec_dot_q(bool verbose) {
     generate_data(0.0, test_data.size(), test_data.data());
     generate_data(1.0, test_data2.size(), test_data2.data());
 
+    {
+        bool failed = !test_turboq_vec_dot_dispatch();
+        num_failed += failed;
+        if (failed || verbose) {
+            printf("%5s vec_dot dispatch:               %s\n", "tbq*", RESULT_STR[failed]);
+        }
+
+        failed = !test_tbq3_codebook();
+        num_failed += failed;
+        if (failed || verbose) {
+            printf("%5s codebook values:               %s\n", "tbq3", RESULT_STR[failed]);
+        }
+
+        failed = !test_tbq3_norm_scaling();
+        num_failed += failed;
+        if (failed || verbose) {
+            printf("%5s norm scaling:                  %s\n", "tbq3", RESULT_STR[failed]);
+        }
+    }
+
     for (int i = 0; i < GGML_TYPE_COUNT; i++) {
         ggml_type type = (ggml_type) i;
         const auto * qfns = ggml_get_type_traits(type);
@@ -163,6 +251,8 @@ static int test_vec_dot_q(bool verbose) {
                 type == GGML_TYPE_Q3_K    ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
                 type == GGML_TYPE_IQ3_S   ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
                 type == GGML_TYPE_IQ3_XXS ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS_XXS :
+                type == GGML_TYPE_TBQ3_0  ? MAX_QUANTIZATION_TOTAL_ERROR_TBQ3 :
+                type == GGML_TYPE_TBQ4_0  ? MAX_QUANTIZATION_TOTAL_ERROR_TBQ4 :
                 type == GGML_TYPE_NVFP4   ? MAX_QUANTIZATION_TOTAL_ERROR_FP4 : MAX_QUANTIZATION_TOTAL_ERROR;
             bool failed = !(total_error < max_quantization_error);
             num_failed += failed;
@@ -185,6 +275,8 @@ static int test_vec_dot_q(bool verbose) {
                 ? MAX_DOT_PRODUCT_ERROR_BINARY
                 : type == GGML_TYPE_TQ1_0 || type == GGML_TYPE_TQ2_0
                 ? MAX_DOT_PRODUCT_ERROR_TERNARY
+                : type == GGML_TYPE_TBQ3_0
+                ? MAX_DOT_PRODUCT_ERROR_TBQ3
                 : type == GGML_TYPE_NVFP4
                 ? MAX_DOT_PRODUCT_ERROR_FP4
                 : MAX_DOT_PRODUCT_ERROR;

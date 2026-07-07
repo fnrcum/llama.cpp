@@ -84,6 +84,7 @@ int g_ggml_sycl_debug = 0;
 int g_ggml_sycl_enable_optimize = 1;
 int g_ggml_sycl_enable_graph = 0;
 int g_ggml_sycl_enable_dnn = 1;
+int g_ggml_sycl_fa_onednn = 1;
 int g_ggml_sycl_enable_vmm = 1;
 int g_ggml_sycl_prioritize_dmmv = 0;
 int g_ggml_sycl_use_async_mem_op = 0;
@@ -284,6 +285,7 @@ static void ggml_check_sycl() try {
         g_ggml_sycl_enable_optimize = ggml_sycl_get_env("GGML_SYCL_ENABLE_OPT", 1);
         g_ggml_sycl_enable_graph = ggml_sycl_get_env("GGML_SYCL_ENABLE_GRAPH", 0);
         g_ggml_sycl_enable_dnn = ggml_sycl_get_env("GGML_SYCL_ENABLE_DNN", 1);
+        g_ggml_sycl_fa_onednn = ggml_sycl_get_env("GGML_SYCL_FA_ONEDNN", 1);
         g_ggml_sycl_enable_vmm = ggml_sycl_get_env("GGML_SYCL_ENABLE_VMM", 1);
         g_ggml_sycl_prioritize_dmmv = ggml_sycl_get_env("GGML_SYCL_PRIORITIZE_DMMV", 0);
 
@@ -350,6 +352,7 @@ static void ggml_check_sycl() try {
 
 #if defined(GGML_SYCL_DNNL)
         GGML_LOG_INFO("  GGML_SYCL_ENABLE_DNN: %d\n", g_ggml_sycl_enable_dnn);
+        GGML_LOG_INFO("  GGML_SYCL_FA_ONEDNN: %d\n", g_ggml_sycl_fa_onednn);
 #else
         GGML_LOG_INFO("  GGML_SYCL_ENABLE_DNN: DNN disabled by compile flag\n");
 #endif
@@ -4473,19 +4476,25 @@ static bool ggml_sycl_mul_mat_id_mmvq_fused(
     const int64_t ne10 = src1->ne[0];
     const int64_t ne11 = src1->ne[1];
     const int64_t ne12 = src1->ne[2];
-    if (ne12 != 1) return false;
+    // Fused GEMV path for decode-sized batches (multi-user generation batches n_tokens > 1).
+    // Above the threshold the counting-sort + batched-GEMM path amortizes expert weight reads better.
+    static const int max_fused_tokens = ggml_sycl_get_env("GGML_SYCL_MOE_FUSED_MAX_TOKENS", 16);
+    if (ne12 < 1 || ne12 > max_fused_tokens) return false;
     if (src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) return false;
     if (ne10 != src0->ne[0] || ne10 % QK8_1 != 0) return false;
     if (!ggml_is_contiguous(src1)) return false;
 
     const int64_t n_ids_per_group = ids->ne[0];
-    if (ids->ne[1] != 1) return false;
+    if (ids->ne[1] != ne12) return false;
+    if (ids->nb[0] % sizeof(int32_t) != 0 || ids->nb[1] % sizeof(int32_t) != 0) return false;
     if (ne11 != 1 && ne11 != n_ids_per_group) return false;
 
     const queue_ptr stream           = ctx.stream();
     const int       src1_padded_cols = GGML_PAD((int) ne10, MATRIX_ROW_PADDING);
     const int       n_experts_used   = (int) n_ids_per_group;
+    const int       n_tokens         = (int) ne12;
     const int       nrows            = (int) src0->ne[1];
+    const int       n_q8_rows        = (int) (ne11 * ne12);
 
     // Lazily reorder the (Q4_K) expert weights into a per-expert SoA layout, then run the reorder
     // GEMV. Placed after the bail checks so a non-dispatchable op does not pay the reorder cost.
@@ -4495,35 +4504,40 @@ static bool ggml_sycl_mul_mat_id_mmvq_fused(
     const bool use_reorder = src0_extra && src0_extra->optimized_feature.reorder;
 
     ggml_sycl_pool_alloc<char> src1_q8_alloc(ctx.pool(),
-        (size_t) ne11 * src1_padded_cols * sizeof(block_q8_1) / QK8_1);
+        (size_t) n_q8_rows * src1_padded_cols * sizeof(block_q8_1) / QK8_1);
     char * src1_ddq = src1_q8_alloc.get();
     if (use_reorder) {
         quantize_row_q8_1_sycl<quantize_and_reorder_q8_1_soa>(
-            (const float *) src1->data, src1_ddq, (int) ne10, (int) ne11,
+            (const float *) src1->data, src1_ddq, (int) ne10, n_q8_rows,
             src1_padded_cols, stream);
     } else {
         quantize_row_q8_1_sycl<quantize_q8_1>(
-            (const float *) src1->data, src1_ddq, (int) ne10, (int) ne11,
+            (const float *) src1->data, src1_ddq, (int) ne10, n_q8_rows,
             src1_padded_cols, stream);
     }
 
     const size_t bytes_per_qrow = (size_t) src1_padded_cols * sizeof(block_q8_1) / QK8_1;
-    const size_t src1_row_stride = (ne11 == 1) ? 0 : bytes_per_qrow;
+    const size_t ids_s0 = ids->nb[0] / sizeof(int32_t);
+    const size_t ids_s1 = ids->nb[1] / sizeof(int32_t);
 
     if (use_reorder) {
         return ggml_sycl_mul_mat_vec_q_id_reorder(
             src0->type, src0->data, src1_ddq, (const int32_t *) ids->data,
-            (float *) dst->data, (int) ne10, nrows, n_experts_used,
+            (float *) dst->data, (int) ne10, nrows,
+            n_experts_used, n_tokens, (int) ne11, ids_s0, ids_s1,
             /*expert_weight_stride=*/ src0->nb[2],
-            /*dst_row_stride=*/ dst->nb[1],
-            src1_row_stride, stream);
+            /*dst_slot_stride=*/ dst->nb[1],
+            /*dst_token_stride=*/ dst->nb[2],
+            bytes_per_qrow, stream);
     }
     return ggml_sycl_mul_mat_vec_q_id(
         src0->type, src0->data, src1_ddq, (const int32_t *) ids->data,
-        (float *) dst->data, (int) ne10, nrows, n_experts_used,
+        (float *) dst->data, (int) ne10, nrows,
+        n_experts_used, n_tokens, (int) ne11, ids_s0, ids_s1,
         /*expert_weight_stride=*/ src0->nb[2],
-        /*dst_row_stride=*/ dst->nb[1],
-        src1_row_stride, stream);
+        /*dst_slot_stride=*/ dst->nb[1],
+        /*dst_token_stride=*/ dst->nb[2],
+        bytes_per_qrow, stream);
 }
 
 // counting sort of the routed rows by expert id (row_id_i, as chosen by the router):
@@ -4582,10 +4596,9 @@ static void ggml_sycl_mul_mat_id(ggml_backend_sycl_context & ctx,
     const int64_t n_as = ne02;
     const int64_t n_ids = ids->ne[0];
 
-    if (ne12 == 1) {
-        if (ggml_sycl_mul_mat_id_mmvq_fused(ctx, src0, src1, ids, dst)) {
-            return;
-        }
+    // Fused GEMV handles decode-sized batches (any small ne12); it bails out internally otherwise.
+    if (ggml_sycl_mul_mat_id_mmvq_fused(ctx, src0, src1, ids, dst)) {
+        return;
     }
 
     std::vector<char> ids_host(ggml_nbytes(ids));
