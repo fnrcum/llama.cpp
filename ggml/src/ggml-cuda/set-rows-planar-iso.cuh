@@ -43,7 +43,7 @@ __device__ __forceinline__ uint8_t sr_quantize_4bit(float val, const float * cen
 
 // ── Planar3: F32[128] → block_planar3_0 ─────────────────────────────
 
-__device__ void quantize_f32_planar3_block(const float * x, block_planar3_0 * dst) {
+static __device__ void quantize_f32_planar3_block(const float * x, block_planar3_0 * dst) {
     // Norm
     float norm_sq = 0.0f;
     float buf[128];
@@ -81,7 +81,7 @@ __device__ void quantize_f32_planar3_block(const float * x, block_planar3_0 * ds
 
 // ── Iso3: F32[128] → block_iso3_0 (quaternion rotation) ────────────
 
-__device__ void quantize_f32_iso3_block(const float * x, block_iso3_0 * dst) {
+static __device__ void quantize_f32_iso3_block(const float * x, block_iso3_0 * dst) {
     float norm_sq = 0.0f;
     float buf[128];
     for (int j = 0; j < QK_ISO3; j++) {
@@ -120,7 +120,7 @@ __device__ void quantize_f32_iso3_block(const float * x, block_iso3_0 * dst) {
 
 // ── Planar4: F32[128] → block_planar4_0 (Givens + 4-bit nibble) ────
 
-__device__ void quantize_f32_planar4_block(const float * x, block_planar4_0 * dst) {
+static __device__ void quantize_f32_planar4_block(const float * x, block_planar4_0 * dst) {
     float norm_sq = 0.0f;
     float buf[128];
     for (int j = 0; j < QK_PLANAR4; j++) {
@@ -153,7 +153,7 @@ __device__ void quantize_f32_planar4_block(const float * x, block_planar4_0 * ds
 
 // ── Iso4: F32[128] → block_iso4_0 (quaternion + 4-bit nibble) ──────
 
-__device__ void quantize_f32_iso4_block(const float * x, block_iso4_0 * dst) {
+static __device__ void quantize_f32_iso4_block(const float * x, block_iso4_0 * dst) {
     float norm_sq = 0.0f;
     float buf[128];
     for (int j = 0; j < QK_ISO4; j++) {
@@ -191,7 +191,7 @@ __device__ void quantize_f32_iso4_block(const float * x, block_iso4_0 * dst) {
 // V-cache variants: NO ROTATION (for transposed V cache)
 // ══════════════════════════════════════════════════════════════════════
 
-__device__ void quantize_f32_planar3_block_norot(const float * x, block_planar3_0 * dst) {
+static __device__ void quantize_f32_planar3_block_norot(const float * x, block_planar3_0 * dst) {
     float norm_sq = 0.0f;
     float buf[128];
     for (int j = 0; j < QK_PLANAR3; j++) { buf[j] = x[j]; norm_sq += buf[j]*buf[j]; }
@@ -211,11 +211,11 @@ __device__ void quantize_f32_planar3_block_norot(const float * x, block_planar3_
     dst->d = __float2half(rn > 1e-10f ? grp_norm / rn : grp_norm);
 }
 
-__device__ void quantize_f32_iso3_block_norot(const float * x, block_iso3_0 * dst) {
+static __device__ void quantize_f32_iso3_block_norot(const float * x, block_iso3_0 * dst) {
     quantize_f32_planar3_block_norot(x, (block_planar3_0 *)dst);
 }
 
-__device__ void quantize_f32_planar4_block_norot(const float * x, block_planar4_0 * dst) {
+static __device__ void quantize_f32_planar4_block_norot(const float * x, block_planar4_0 * dst) {
     float norm_sq = 0.0f;
     float buf[128];
     for (int j = 0; j < QK_PLANAR4; j++) { buf[j] = x[j]; norm_sq += buf[j]*buf[j]; }
@@ -234,6 +234,6 @@ __device__ void quantize_f32_planar4_block_norot(const float * x, block_planar4_
     // rnorm not in our 66-byte block layout
 }
 
-__device__ void quantize_f32_iso4_block_norot(const float * x, block_iso4_0 * dst) {
+static __device__ void quantize_f32_iso4_block_norot(const float * x, block_iso4_0 * dst) {
     quantize_f32_planar4_block_norot(x, (block_planar4_0 *)dst);
 }
