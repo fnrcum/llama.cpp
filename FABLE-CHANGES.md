@@ -337,3 +337,56 @@ Result archives: `/data/bench-fable/results-gemma-{baseline,fable-f16,fable-v2,f
   next lever is an XMX/oneDNN decode path for DV=512, or ncols1 tuning for the 5-token
   unified-KV decode shape.
 - Runtime-test the CUDA tbq4 FA path on the CUDA containers if KV quant is wanted there.
+
+---
+
+# Session 2026-07-08 - upstream sync, CI trim, CUDA build fixes
+
+## 1. Upstream merge
+
+- Merged `ggml-org/llama.cpp` master @ `90e0f5cfc` into fork `master` (which now contains the
+  former `fable-sycl` branch via PR #1).
+- Conflict resolution of note: upstream took enum slot 42 for `GGML_TYPE_Q2_0`, so the fork
+  quant types were renumbered: `TBQ3_0=43, TBQ4_0=44, PLANAR3_0=45, ISO3_0=46, PLANAR4_0=47,
+  ISO4_0=48` (`GGML_TYPE_COUNT=49`); same shift for `GGML_FTYPE_MOSTLY_TBQ*` and
+  `LLAMA_FTYPE_MOSTLY_TBQ*`. **KV caches / GGUFs quantized with the old numeric ids (42/43)
+  from earlier fable builds are not compatible with this and later builds.**
+- `test_set_rows` turboq test cases adapted to the new upstream signature (added
+  `type_src`/`type_dst` split).
+
+## 2. CI (CUDA, ubuntu) build fixes
+
+The `CI (CUDA, ubuntu)` workflow (`-DLLAMA_FATAL_WARNINGS=ON`) had never passed since the
+rq-models patch landed; reproduced in the same `nvidia/cuda:12.6.2-devel-ubuntu24.04` container
+and fixed:
+
+- `ggml/src/ggml-quants.h`: added missing prototypes for `quantize_{planar3,planar4,iso3,iso4}_0`,
+  `quantize_row_{planar4,iso4}_0_ref`, `dequantize_row_{planar4,iso4}_0`
+  (-Werror=missing-prototypes).
+- `ggml/src/ggml-cuda/cpy-planar-iso.cu`: include its own header (missing-declarations).
+- `ggml/src/ggml-cuda/tbq3-cuda.cuh`: removed dead `d` pointer with wrong offset (unused variable).
+- `ggml/src/ggml-cuda/fattn.cu`: handle `BEST_FATTN_KERNEL_MMA_TBQ4` in the new upstream
+  `ggml_cuda_flash_attn_ext_get_alloc_size()` switch (kernel reads TBQ4 K/V directly, no f16
+  conversion buffer needed).
+- `ggml/src/ggml-cpu/ops.cpp`: added `PLANAR3_0/ISO3_0/PLANAR4_0/ISO4_0` to the clamp abort
+  switch (-Werror=switch).
+
+Note: `ggml/src/ggml-turbo-quant.c` (the pre-rename `turbo2/3/4_0` implementation) is not
+referenced by any CMakeLists and does not compile standalone; it is dead code kept for reference.
+
+## 3. GitHub Actions trim (fork-relevant only)
+
+Kept: `build-cpu.yml` (+ reusable `build-cmake-pkg.yml`), `build-cuda-ubuntu.yml` (cuda job
+only; hip/musa jobs dropped), `build-sycl.yml`, `server.yml`, `fable-release.yml`.
+Removed all other upstream workflows (apple/android/cann/ibm/riscv/rocm/musa/vulkan/webgpu/
+opencl/openvino builds, docker.yml, release.yml, winget, gguf-publish, ui pipelines, and all
+self-hosted-runner workflows that queue forever on a fork).
+
+`fable-release.yml` renamed to "Fable Release" and extended with a `build-cuda` job that
+builds `.devops/cuda.Dockerfile` (target `server`) and pushes
+`ghcr.io/<owner>/llama-cuda-fable:{latest,<version>}` next to the existing SYCL image.
+
+## 4. Docs
+
+- README: added "Fable fork changes" section - per-commit delta vs upstream, docker usage for
+  the CUDA and SYCL images; release body now lists both images.

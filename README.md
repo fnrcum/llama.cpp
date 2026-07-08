@@ -12,6 +12,114 @@
 
 LLM inference in C/C++
 
+> [!IMPORTANT]
+> This is the **fable fork** of llama.cpp (`fnrcum/llama.cpp`). It tracks upstream
+> `ggml-org/llama.cpp` master and adds SYCL (Intel Arc / Battlemage), CUDA and
+> KV-cache-quantization work on top. See [Fable fork changes](#fable-fork-changes)
+> for what is different from upstream and how to use the prebuilt Docker images.
+
+## Fable fork changes
+
+This fork is upstream master plus a set of performance and experimentation patches,
+maintained for serving on Intel Arc (Battlemage) and NVIDIA GPUs. If you pull this
+code or use the `ghcr.io/fnrcum/llama-*-fable` Docker images, this is what you get
+on top of stock llama.cpp:
+
+- **SYCL flash attention via oneDNN (XMX engines)** - f16 prefill path for Xe2 /
+  Battlemage GPUs, large prefill speedups at long context (x1.2 at 512 tokens up to
+  x4+ at 80k tokens).
+- **SYCL fused MoE decode** - the fused MMVQ expert-GEMV path now covers multi-token
+  decode batches, which greatly improves multi-user generation throughput on MoE
+  models (e.g. Arc Pro B70).
+- **SYCL Gemma flash-attention tile tuning** - `ncols2=8` tile shape for DV=512
+  GQA-8 decode so the KV cache is read once.
+- **TurboQuant / RotorQuant KV cache types** - experimental 3- and 4-bit KV cache
+  quantization types `tbq3_0`, `tbq4_0`, `planar3_0`, `iso3_0`, `planar4_0`,
+  `iso4_0` (CPU + CUDA kernels). These are fork-specific: GGUF files or KV caches
+  using them are not compatible with upstream llama.cpp.
+- **DSpark speculative decoding** - a `dspark` draft architecture and
+  `draft-dspark` speculative type (see [docs/speculative.md](docs/speculative.md)).
+- **Fork CI / release pipeline** - trimmed GitHub Actions to CPU/CUDA/SYCL/server
+  checks plus a release workflow that publishes the Docker images and a SYCL binary
+  tarball; upstream-only pipelines (Apple, Android, ROCm, MUSA, CANN, etc.) were
+  removed.
+
+Details, benchmarks and rollback notes for every change live in
+[FABLE-CHANGES.md](FABLE-CHANGES.md).
+
+### Per-commit changes vs upstream master
+
+| Commit | Change |
+| --- | --- |
+| `8ec11a142` | SYCL: F16 flash attention on the XMX engines via the oneDNN graph API (prefill; x1.21 at p=512, x4.26 at p=80k on Qwen3.6-27B-Q8_0) |
+| `7eebf5c57` | SYCL: review fixes for the oneDNN FA path (pp512 +32% with fa=1, perplexity delta 0.11%) |
+| `425582fbd` | SYCL: oneDNN FA rev 3.0 - gate to Battlemage (Xe2) only, other archs fall back; multi-GPU sync fix |
+| `96c5be9dd` | spec: add DSpark speculative decoding (`dspark` draft arch + `draft-dspark` spec type) |
+| `8c548e7a8` / `1ba891a03` | spec: draft block size is read in the dflash/dspark implementations |
+| `8241e1a83` | spec: PR-25222 revision v2, addressed audits |
+| `47932db0e` | docs: DSpark section in `docs/speculative.md` |
+| `e22b9cf72` | SYCL: extend fused MoE MMVQ GEMV to multi-token decode batches (multi-user generation speedup on Arc B70) |
+| `a5c4c5425` | Add TurboQuant/RotorQuant KV cache types (`tbq3_0`, `tbq4_0`, `planar3_0`, `iso3_0`, `planar4_0`, `iso4_0`): CPU quantizers + CUDA set-rows/cpy/flash-attention kernels |
+| `117df6229` | tbq3_0: fix broken 3-bit bit-packing (UB shift, dropped 3rd byte) and stack-smashing norm test |
+| `463568f72` | tbq3_0: measured error thresholds in `test-quantize-fns` |
+| `92f2cfc3f` | SYCL: fattn-tile `ncols2=8` for DV=512 (Gemma full-attention GQA-8 decode reads KV once) |
+| `2513c8eb2` | tests: adapt patch-added `test_cpy` calls to the new upstream signature |
+| `61bec8ff9` / `a8cc188af` | `Dockerfile.fable` for building the `llama-sycl-fable` image from prebuilt binaries |
+| `9080878ed` | CI: fable release workflow (GHCR images + binary tarball + GitHub release) |
+| `496b3ad29` / `1b7ca4cb4` | docs: `FABLE-CHANGES.md` change and test log |
+
+On top of these, master carries periodic merge commits from `ggml-org/llama.cpp`
+master; run `git log --no-merges upstream/master..master` for an always-current
+list.
+
+### Docker: CUDA image
+
+The CUDA image is built from upstream's `.devops/cuda.Dockerfile` with the fork's
+sources and runs `llama-server` by default. It requires an NVIDIA driver plus the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+on the host:
+
+```sh
+docker pull ghcr.io/fnrcum/llama-cuda-fable:latest
+
+docker run --rm --gpus all \
+    -v /path/to/models:/models \
+    -p 8080:8080 \
+    ghcr.io/fnrcum/llama-cuda-fable:latest \
+    -m /models/my_model.gguf -c 32768 -ngl 99 --host 0.0.0.0 --port 8080
+```
+
+The fork's KV cache quantization types can be enabled with e.g.
+`--cache-type-k tbq4_0 --cache-type-v tbq4_0` (requires flash attention, `-fa 1`).
+
+### Docker: SYCL image (Intel Arc / Battlemage)
+
+The SYCL image bundles the Intel oneAPI runtime, Level Zero and the compute
+runtime; the host only needs a working i915/xe kernel driver. It also runs
+`llama-server` by default. GPU access is passed through `/dev/dri`:
+
+```sh
+docker pull ghcr.io/fnrcum/llama-sycl-fable:latest
+
+docker run --rm \
+    --device /dev/dri \
+    -v /path/to/models:/models \
+    -p 8080:8080 \
+    ghcr.io/fnrcum/llama-sycl-fable:latest \
+    -m /models/my_model.gguf -c 32768 -ngl 99 --host 0.0.0.0 --port 8080
+```
+
+Notes:
+
+- The oneDNN XMX flash-attention prefill path is active automatically on
+  Battlemage (Xe2) GPUs with `-fa 1`; other Intel archs fall back to the regular
+  SYCL kernels.
+- For multi-GPU hosts add `--device /dev/dri` (all render nodes are exposed) and
+  select devices with `ZE_AFFINITY_MASK` or `GGML_SYCL_DEVICE`.
+- Every [release](https://github.com/fnrcum/llama.cpp/releases) also ships a
+  `llama-<version>-sycl-linux-x64.tar.gz` binary tarball for running outside
+  Docker (needs the oneAPI runtime + Level Zero on the host).
+
 ## Recent API changes
 
 - [Changelog for `libllama` API](https://github.com/ggml-org/llama.cpp/issues/9289)
