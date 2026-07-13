@@ -645,6 +645,9 @@ struct common_params {
 
     std::map<std::string, std::string> default_template_kwargs;
 
+    // CLI params
+    std::string server_base; // if set, connect to this server instead of starting a new one
+
     // UI configs
     bool ui = true;
     bool ui_mcp_proxy = false;
@@ -1078,6 +1081,9 @@ enum ggml_opt_optimizer_type common_opt_get_optimizer(const char *);
 
 struct common_prompt_checkpoint {
     int64_t n_tokens;
+
+    // (optional) id of the task that created the checkpoint
+    int id_task = -1;
 
     llama_pos pos_min;
     llama_pos pos_max;
