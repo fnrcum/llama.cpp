@@ -405,3 +405,17 @@ builds `.devops/cuda.Dockerfile` (target `server`) and pushes
   cleanly and still compiles.
 - Validated: CPU build + `test-quantize-fns` (all six fork KV types pass) and the full
   `-DLLAMA_FATAL_WARNINGS=ON` CUDA build in `nvidia/cuda:12.6.2-devel-ubuntu24.04`.
+
+## Backported open upstream PRs
+
+- `0a9ef27f2` - **PR #25608** (open, not yet merged upstream): SYCL UE4M3 decode fix.
+  NVFP4 per-group scales are unsigned E4M3; the SYCL path decoded them through the
+  signed `__nv_fp8_e4m3` helper (and treated exp=0xF as NaN), so NVFP4 GGUFs produced
+  gibberish on Arc. Only touches `ggml_sycl_ue4m3_to_fp32()` in `ggml-sycl/common.hpp`;
+  no effect on non-NVFP4 models.
+- `910e652c3` - **PR #25550** (open, not yet merged upstream): SYCL XIELU unary op,
+  same element-wise pattern as the other unary ops. Additive only; matters for models
+  using XIELU activations (e.g. Apertus), no effect on Ornith/Gemma.
+- Regression-tested on the AI server in `llama-sycl-1` (Arc Pro B70, renderD130) with
+  the production launch flags: Gemma 4 26B QAT + mmproj and Ornith-1.0-35B-A3B both
+  load and generate correctly; `test-backend-ops -o XIELU` passes on SYCL.

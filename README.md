@@ -64,6 +64,8 @@ Details, benchmarks and rollback notes for every change live in
 | `463568f72` | tbq3_0: measured error thresholds in `test-quantize-fns` |
 | `92f2cfc3f` | SYCL: fattn-tile `ncols2=8` for DV=512 (Gemma full-attention GQA-8 decode reads KV once) |
 | `2513c8eb2` | tests: adapt patch-added `test_cpy` calls to the new upstream signature |
+| `0a9ef27f2` | SYCL: fix UE4M3 (NVFP4 scale) decode - unsigned, exp=0xF valid (backport of upstream PR #25608; fixes gibberish from NVFP4 GGUFs on Arc) |
+| `910e652c3` | SYCL: XIELU unary op support (backport of upstream PR #25550) |
 | `61bec8ff9` / `a8cc188af` | `Dockerfile.fable` for building the `llama-sycl-fable` image from prebuilt binaries |
 | `9080878ed` | CI: fable release workflow (GHCR images + binary tarball + GitHub release) |
 | `496b3ad29` / `1b7ca4cb4` | docs: `FABLE-CHANGES.md` change and test log |
