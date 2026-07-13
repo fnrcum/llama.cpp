@@ -39,6 +39,10 @@ on top of stock llama.cpp:
   using them are not compatible with upstream llama.cpp.
 - **DSpark speculative decoding** - a `dspark` draft architecture and
   `draft-dspark` speculative type (see [docs/speculative.md](docs/speculative.md)).
+- **Backported open upstream PRs** - SYCL fixes merged here before landing
+  upstream: [#25608](https://github.com/ggml-org/llama.cpp/pull/25608) (UE4M3/NVFP4
+  scale decode fix - NVFP4 GGUFs no longer produce gibberish on Intel Arc) and
+  [#25550](https://github.com/ggml-org/llama.cpp/pull/25550) (XIELU unary op).
 - **Fork CI / release pipeline** - trimmed GitHub Actions to CPU/CUDA/SYCL/server
   checks plus a release workflow that publishes the Docker images and a SYCL binary
   tarball; upstream-only pipelines (Apple, Android, ROCm, MUSA, CANN, etc.) were
@@ -72,7 +76,12 @@ Details, benchmarks and rollback notes for every change live in
 
 On top of these, master carries periodic merge commits from `ggml-org/llama.cpp`
 master; run `git log --no-merges upstream/master..master` for an always-current
-list.
+list. Last upstream sync: `b980114a6` (2026-07-13, upstream master @ `91c631b21`),
+which also renumbered the fork KV cache type enums to make room for upstream's
+`Q2_0` (see [FABLE-CHANGES.md](FABLE-CHANGES.md) session 2026-07-13). The
+backported PRs and this sync were regression-tested on Arc Pro B70 with Gemma 4
+26B QAT (text + vision, parallel slots) and Ornith-1.0-35B-A3B (MoE, long-context
+prefill) - no regressions.
 
 ### Docker: CUDA image
 
