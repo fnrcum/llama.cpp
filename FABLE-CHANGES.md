@@ -390,3 +390,18 @@ builds `.devops/cuda.Dockerfile` (target `server`) and pushes
 
 - README: added "Fable fork changes" section - per-commit delta vs upstream, docker usage for
   the CUDA and SYCL images; release body now lists both images.
+
+---
+
+# Session 2026-07-13 - upstream sync
+
+- Merged `ggml-org/llama.cpp` master (`91c631b21`, 62 commits) into fork `master`.
+- Conflicts (3): `.github/workflows/hip-quality-check.yml` and `ui-publish.yml` were
+  modify/delete - kept deleted (fork removed these workflows). `ggml-cuda.cu`
+  `GGML_OP_SET_ROWS` support check: combined upstream's new `f16->f16` set-rows path
+  with the fork's turboq/planar/iso `f32->quant` types.
+- Upstream refactored the CUDA flash-attention MMA path (fattn-mma-f16.cuh) and the
+  KQ-mask-always-f16 change (#25370); the fork TBQ4 FA path (`is_tbq4_kv`) auto-merged
+  cleanly and still compiles.
+- Validated: CPU build + `test-quantize-fns` (all six fork KV types pass) and the full
+  `-DLLAMA_FATAL_WARNINGS=ON` CUDA build in `nvidia/cuda:12.6.2-devel-ubuntu24.04`.
