@@ -5637,7 +5637,7 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             }
         }
         if (node->op == GGML_OP_RMS_NORM &&
-            ggml_sycl_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL })) {
+            ggml_sycl_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL }, {})) {
             std::chrono::steady_clock::time_point t0;
             if (profile) {
                 sycl_ctx->stream()->wait();
@@ -5651,6 +5651,27 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
                                       .count();
                 std::lock_guard<std::mutex> lock(g_sycl_op_profile_mu);
                 auto & e = g_sycl_op_profile["RMS_NORM+MUL(fused)"];
+                e.total_ms += ms;
+                e.count += 1;
+            }
+            i++;
+            continue;
+        }
+        if (node->op == GGML_OP_UNARY &&
+            ggml_sycl_can_fuse(cgraph, i, { GGML_OP_UNARY, GGML_OP_MUL }, { ggml_get_unary_op(node) })) {
+            std::chrono::steady_clock::time_point t0u;
+            if (profile) {
+                sycl_ctx->stream()->wait();
+                t0u = std::chrono::steady_clock::now();
+            }
+            ggml_sycl_op_unary_mul_fused(*sycl_ctx, node, cgraph->nodes[i + 1]);
+            if (profile) {
+                sycl_ctx->stream()->wait();
+                const double ms = std::chrono::duration<double, std::milli>(
+                                      std::chrono::steady_clock::now() - t0u)
+                                      .count();
+                std::lock_guard<std::mutex> lock(g_sycl_op_profile_mu);
+                auto & e = g_sycl_op_profile["UNARY+MUL(fused)"];
                 e.total_ms += ms;
                 e.count += 1;
             }
