@@ -453,3 +453,21 @@ builds `.devops/cuda.Dockerfile` (target `server`) and pushes
 ## 4. Validation (AI server)
 
 See dated bench notes under `/data/bench-fable/` after deploy to `llama-sycl-1`.
+
+## 4. Validation (AI server) - completed 2026-08-04
+
+Built on AI server (`intel/oneapi-basekit:2025.3.2`, `GGML_SYCL_F16=ON`, `GGML_SYCL_DNN=ON`),
+image `llama-sycl-fable:2026-08-04` == `latest` (commit `0c88bcd08`).
+
+### Correctness
+- `test-backend-ops test -b SYCL0 -o MUL_MAT` : 1015/1015 OK
+- Q1_0 / Q2_0 `MUL_MAT` and `MUL_MAT_ID` (incl. multi-token fused MoE) : all OK
+
+### Gemma 4 26B QAT (HTTP bench on llama-sycl-1)
+See `/data/bench-fable/results-bonsai-ternary-sycl-20260804.md` (single_48k ~2100 pp / ~24.6 tg).
+
+### Bonsai Q1_0 + Ternary Q2_g64 (llama-bench, B70)
+- Q1_0: pp40960 ~1161 t/s, tg128 ~25.9, tg@40k ~17.3
+- Q2_g64: pp40960 ~1172 t/s, tg128 ~14.9, tg@40k ~11.6
+- Note: Prism `Ternary-Bonsai-27B-Q2_0.gguf` (g128) does not load on upstream/fable
+  (QK2_0=64). Use `Ternary-Bonsai-27B-Q2_g64.gguf` for mainline SYCL.
