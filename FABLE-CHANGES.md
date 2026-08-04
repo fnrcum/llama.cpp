@@ -419,3 +419,37 @@ builds `.devops/cuda.Dockerfile` (target `server`) and pushes
 - Regression-tested on the AI server in `llama-sycl-1` (Arc Pro B70, renderD130) with
   the production launch flags: Gemma 4 26B QAT + mmproj and Ornith-1.0-35B-A3B both
   load and generate correctly; `test-backend-ops -o XIELU` passes on SYCL.
+
+---
+
+# Session 2026-08-04 - upstream sync (Q1_0/Q2_0 ternary/bonsai + SYCL)
+
+## 1. Upstream merge
+
+- Merged `ggml-org/llama.cpp` master @ `b06fbc968` into fork `master` (~274 commits).
+- Brings in upstream Q2_0 (ternary bonsai) and related SYCL/CUDA/Metal/Vulkan support,
+  including SYCL MMVQ `mul_mat` for Q2_0 (PR #26231) and CUDA Q1/Q2 improvements.
+- Kept fork TurboQuant/RotorQuant type ids (`TBQ3_0=43` ... `ISO4_0=48`), multi-token
+  fused MoE MMVQ, Gemma FA tile `ncols2=8`, and trimmed CI/workflows.
+
+## 2. SYCL adaptations for Q1_0 / Q2_0
+
+- `ggml/src/ggml-sycl/mmvq.cpp`: auto-merge brought Q2_0 into the dense MMVQ path and
+  into the MoE fused dispatcher, but the Q2_0 MoE case still used the pre-fable
+  single-token call signature. Fixed to the multi-token fused API
+  (`n_ids`, `n_tokens`, `dst_slot_stride`, `dst_token_stride`, ...).
+- Added matching `GGML_TYPE_Q1_0` case to the same multi-token fused MoE dispatcher
+  (Bonsai Q1_0 / future MoE Q1 experts).
+
+## 3. Conflict resolution notes
+
+- Took upstream `fattn-onednn.cpp` (quantized-KV oneDNN FA path + `GGML_SYCL_FA_ONEDNN_MAX_KV`).
+- CUDA `fattn.cu`: dropped removed WMMA include; kept `BEST_FATTN_KERNEL_MMA_TBQ4` and
+  `cpy-planar-iso.cuh`.
+- `ggml-cuda.cu` SET_ROWS: combined upstream K-quants/IQ with fork planar/iso types.
+- Kept `LLM_ARCH_DSPARK` for existing GGUFs; also took upstream `LLM_ARCH_NANBEIGE`.
+- DSpark conversion/speculative factory follow upstream (DFlash-backed).
+
+## 4. Validation (AI server)
+
+See dated bench notes under `/data/bench-fable/` after deploy to `llama-sycl-1`.
