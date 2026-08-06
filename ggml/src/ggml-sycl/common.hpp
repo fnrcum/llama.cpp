@@ -68,6 +68,15 @@ extern int g_ggml_sycl_fa_onednn;
 extern int g_ggml_sycl_fa_onednn_max_kv;
 extern int g_ggml_sycl_op_profile; // GGML_SYCL_OP_PROFILE=1
 
+// Decode flash-attention kernel override values for GGML_SYCL_FA_DECODE_KERNEL.
+enum ggml_sycl_fa_decode_kernel {
+    GGML_SYCL_FA_DECODE_AUTO = 0, // default: quantized KV decode uses TILE, F16 unchanged
+    GGML_SYCL_FA_DECODE_VEC  = 1, // force VEC for all decode
+    GGML_SYCL_FA_DECODE_TILE = 2, // force TILE for all decode
+};
+
+extern int g_ggml_sycl_fa_decode_kernel;
+
 
 #if defined(__clang__) && __has_builtin(__builtin_expect)
 // Hint the optimizer to pipeline the more likely following instruction in branches
