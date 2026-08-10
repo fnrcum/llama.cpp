@@ -76,6 +76,7 @@ enum ggml_sycl_fa_decode_kernel {
 };
 
 extern int g_ggml_sycl_fa_decode_kernel;
+extern int g_ggml_sycl_enable_mkl_fa;
 
 
 #if defined(__clang__) && __has_builtin(__builtin_expect)
