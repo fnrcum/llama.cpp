@@ -71,4 +71,3 @@ jobs:
             -DGGML_CUDA=ON \
             -DGGML_CUDA_CUB_3DOT2=ON
           cmake --build build
-
