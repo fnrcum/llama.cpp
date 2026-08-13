@@ -471,3 +471,25 @@ See `/data/bench-fable/results-bonsai-ternary-sycl-20260804.md` (single_48k ~210
 - Q2_g64: pp40960 ~1172 t/s, tg128 ~14.9, tg@40k ~11.6
 - Note: Prism `Ternary-Bonsai-27B-Q2_0.gguf` (g128) does not load on upstream/fable
   (QK2_0=64). Use `Ternary-Bonsai-27B-Q2_g64.gguf` for mainline SYCL.
+
+---
+
+## 2026-08-13 — upstream sync + SYCL perf PRs (`fable-2026-08-13`)
+
+Merged upstream `ggml-org/llama.cpp` master through ~b10398 into fork master.
+
+Local carry-forward:
+- Q2 MMVQ decode opts + FA prefer VEC for F16 small-batch decode
+- Keep unsigned UE4M3 SYCL decode (do not treat 0x7F as zero)
+
+Backported open upstream PRs (private fork):
+- #25089 MoE SYCL graph compatibility
+- #26643 fuse gated-delta-net state writeback cpy
+- #26411 fuse UNARY(silu|sigmoid|softplus)+MUL
+- #26689 FA decode TILE for quantized KV + `GGML_SYCL_FA_DECODE_KERNEL`
+- #26789 host pinned mem
+- #26863 MKL FA env as global
+- #26635 OneDNN Alchemist gate
+- #25214 `--gpu-heartbeat` (SYCL/Vulkan)
+
+Skipped / deferred: #26779 (draft q4_K FFN fuse), #26631 (all-backend AI-generated).

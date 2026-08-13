@@ -67,6 +67,7 @@ extern int g_ggml_sycl_dev2dev_memcpy;
 extern int g_ggml_sycl_fa_onednn;
 extern int g_ggml_sycl_fa_onednn_max_kv;
 extern int g_ggml_sycl_op_profile; // GGML_SYCL_OP_PROFILE=1
+extern int g_ggml_sycl_enable_host_pinned_mem; // GGML_SYCL_ENABLE_HOST_PINNED_MEM
 
 // Decode flash-attention kernel override values for GGML_SYCL_FA_DECODE_KERNEL.
 enum ggml_sycl_fa_decode_kernel {
