@@ -13,12 +13,15 @@
 #include <algorithm>
 #include <assert.h>
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <float.h>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,6 +31,7 @@
 #include <fstream>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string>
 #include <regex>
 
 #include <sycl/sycl.hpp>
@@ -95,6 +99,71 @@ int g_ggml_sycl_use_level_zero_api = 0;
 int g_ggml_sycl_enable_flash_attention = 1;
 int g_ggml_sycl_dev2dev_memcpy = DEV2DEV_MEMCPY_SYCL;
 int g_ggml_sycl_usm_system = 0;
+int g_ggml_sycl_op_profile = 0;
+
+struct sycl_op_profile_entry {
+    double   total_ms = 0.0;
+    uint64_t count    = 0;
+};
+
+static std::mutex                                  g_sycl_op_profile_mu;
+static std::map<std::string, sycl_op_profile_entry> g_sycl_op_profile;
+static uint64_t                                    g_sycl_op_profile_graphs = 0;
+static const uint64_t                              g_sycl_op_profile_dump_every = 32;
+
+static std::string sycl_op_profile_key(const ggml_tensor * node) {
+    std::string key = ggml_op_name(node->op);
+    if (node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID) {
+        key += "/";
+        key += ggml_type_name(node->src[0]->type);
+        if (node->src[1]) {
+            key += "x";
+            key += ggml_type_name(node->src[1]->type);
+            key += "[n=";
+            key += std::to_string(node->src[1]->ne[1]);
+            key += "]";
+        }
+    } else if (node->op == GGML_OP_FLASH_ATTN_EXT || node->op == GGML_OP_SOFT_MAX) {
+        key += "[D=";
+        key += std::to_string(node->ne[0]);
+        key += "]";
+    }
+    return key;
+}
+
+static void sycl_op_profile_dump(bool force) {
+    std::lock_guard<std::mutex> lock(g_sycl_op_profile_mu);
+    if (!force && (g_sycl_op_profile_graphs == 0 ||
+                   (g_sycl_op_profile_graphs % g_sycl_op_profile_dump_every) != 0)) {
+        return;
+    }
+    if (g_sycl_op_profile.empty()) {
+        return;
+    }
+
+    std::vector<std::pair<std::string, sycl_op_profile_entry>> rows(
+        g_sycl_op_profile.begin(), g_sycl_op_profile.end());
+    std::sort(rows.begin(), rows.end(),
+              [](const auto & a, const auto & b) { return a.second.total_ms > b.second.total_ms; });
+
+    double total = 0.0;
+    for (const auto & r : rows) {
+        total += r.second.total_ms;
+    }
+
+    fprintf(stderr, "\n[SYCL_OP_PROFILE] graphs=%" PRIu64 " total_ms=%.2f (host+sync per op)\n",
+            g_sycl_op_profile_graphs, total);
+    fprintf(stderr, "%-40s %10s %10s %8s %8s\n", "op", "ms", "calls", "avg_us", "%");
+    const size_t nshow = std::min(rows.size(), size_t(25));
+    for (size_t i = 0; i < nshow; ++i) {
+        const auto & e = rows[i].second;
+        const double pct = total > 0.0 ? 100.0 * e.total_ms / total : 0.0;
+        const double avg_us = e.count ? 1e3 * e.total_ms / double(e.count) : 0.0;
+        fprintf(stderr, "%-40s %10.2f %10" PRIu64 " %8.1f %7.1f%%\n",
+                rows[i].first.c_str(), e.total_ms, e.count, avg_us, pct);
+    }
+    fflush(stderr);
+}
 
 static ggml_sycl_device_info ggml_sycl_init() {
     ggml_sycl_device_info info = {};
@@ -289,6 +358,7 @@ static void ggml_check_sycl() try {
 
     if (!initialized) {
         g_ggml_sycl_debug = ggml_sycl_get_env("GGML_SYCL_DEBUG", 0);
+        g_ggml_sycl_op_profile = ggml_sycl_get_env("GGML_SYCL_OP_PROFILE", 0);
         g_ggml_sycl_enable_optimize = ggml_sycl_get_env("GGML_SYCL_ENABLE_OPT", 1);
         g_ggml_sycl_enable_graph = ggml_sycl_get_env("GGML_SYCL_ENABLE_GRAPH", 0);
         g_ggml_sycl_enable_dnn = ggml_sycl_get_env("GGML_SYCL_ENABLE_DNN", 1);
@@ -351,6 +421,7 @@ static void ggml_check_sycl() try {
 
         GGML_LOG_INFO("Running with Environment Variables:\n");
         GGML_LOG_INFO("  GGML_SYCL_DEBUG: %d\n", g_ggml_sycl_debug);
+        GGML_LOG_INFO("  GGML_SYCL_OP_PROFILE: %d\n", g_ggml_sycl_op_profile);
 
 #ifdef GGML_SYCL_SUPPORT_LEVEL_ZERO_API
         GGML_LOG_INFO("  GGML_SYCL_DEV2DEV_MEMCPY: %d (%s)\n", g_ggml_sycl_dev2dev_memcpy, dev2dev_int2str(g_ggml_sycl_dev2dev_memcpy));
@@ -3726,6 +3797,7 @@ inline bool ggml_sycl_supports_reorder_dmmv(enum ggml_type type) {
 inline bool ggml_sycl_supports_reorder_mmvq(enum ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q1_0:
+        case GGML_TYPE_Q2_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_Q3_K:
@@ -3860,6 +3932,43 @@ static bool reorder_qw_q4_0(uint8_t * data_device, const int ncols, const int nr
                 *(qs_ptr + ib * QK4_0 / 2 + j) = x[ib].qs[j];
             }
             *(d_ptr + ib) = x[ib].d;
+        });
+    if (!g_ggml_sycl_use_async_mem_op) {
+        reorder_event.wait_and_throw();
+    }
+    return true;
+}
+
+static bool reorder_qw_q2_0(uint8_t * data_device, const int ncols, const int nrows, size_t size, size_t offset,
+                            dpct::queue_ptr stream) {
+    sycl_reorder_temp_buffer tmp(stream, size);
+    if (!tmp) {
+        GGML_LOG_WARN("%s: failed to allocate %zu bytes for reorder temp buffer, skipping reorder\n", __func__, size);
+        return false;
+    }
+    uint8_t * tmp_buf = static_cast<uint8_t *>(tmp.ptr);
+
+    sycl::event copy_event;
+    SYCL_CHECK(CHECK_TRY_ERROR(copy_event = stream->memcpy(tmp_buf, data_device, size)));
+    if (!g_ggml_sycl_use_async_mem_op) {
+        copy_event.wait();
+    }
+
+    GGML_ASSERT((size % sizeof(block_q2_0) == 0));
+    GGML_ASSERT((offset % sizeof(block_q2_0) == 0));
+    int offset_blks = offset / sizeof(block_q2_0);
+    auto qs_ptr     = data_device + offset_blks * (QK2_0 / 4);
+    auto d_ptr      = (sycl::half *)(qs_ptr + ncols * nrows / 4) + offset_blks;
+
+    auto reorder_event = stream->parallel_for(
+        size / sizeof(block_q2_0),
+        [=](auto i) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+            const block_q2_0 * x  = (const block_q2_0 *) tmp_buf;
+            const int          ib = i;
+            for (int j = 0; j < QK2_0 / 4; ++j) {
+                qs_ptr[ib * (QK2_0 / 4) + j] = x[ib].qs[j];
+            }
+            d_ptr[ib] = x[ib].d;
         });
     if (!g_ggml_sycl_use_async_mem_op) {
         reorder_event.wait_and_throw();
@@ -4307,6 +4416,8 @@ static bool reorder_qw(const ggml_tensor * src0, dpct::queue_ptr stream) {
     }
 
     switch (src0->type) {
+        case GGML_TYPE_Q2_0:
+            return reorder_qw_q2_0(data_device, ncols, nrows, size, 0, stream);
         case GGML_TYPE_Q4_0:
             return reorder_qw_q4_0(data_device, ncols, nrows, size, 0, stream);
         case GGML_TYPE_Q8_0:
@@ -5394,6 +5505,7 @@ catch (sycl::exception const &exc) {
 
 static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * sycl_ctx, ggml_cgraph * cgraph) {
     ggml_sycl_set_main_device(sycl_ctx->device);
+    const bool profile = g_ggml_sycl_op_profile != 0;
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
@@ -5419,16 +5531,55 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
 #endif
         if (node->op == GGML_OP_RMS_NORM &&
             ggml_sycl_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL })) {
+            std::chrono::steady_clock::time_point t0;
+            if (profile) {
+                sycl_ctx->stream()->wait();
+                t0 = std::chrono::steady_clock::now();
+            }
             ggml_sycl_op_rms_norm_fused(*sycl_ctx, node, cgraph->nodes[i + 1]);
+            if (profile) {
+                sycl_ctx->stream()->wait();
+                const double ms = std::chrono::duration<double, std::milli>(
+                                      std::chrono::steady_clock::now() - t0)
+                                      .count();
+                std::lock_guard<std::mutex> lock(g_sycl_op_profile_mu);
+                auto & e = g_sycl_op_profile["RMS_NORM+MUL(fused)"];
+                e.total_ms += ms;
+                e.count += 1;
+            }
             i++;
             continue;
         }
 
+        std::chrono::steady_clock::time_point t0;
+        if (profile) {
+            sycl_ctx->stream()->wait();
+            t0 = std::chrono::steady_clock::now();
+        }
         bool ok = ggml_sycl_compute_forward(*sycl_ctx, node);
+        if (profile) {
+            sycl_ctx->stream()->wait();
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - t0)
+                                  .count();
+            const std::string key = sycl_op_profile_key(node);
+            std::lock_guard<std::mutex> lock(g_sycl_op_profile_mu);
+            auto & e = g_sycl_op_profile[key];
+            e.total_ms += ms;
+            e.count += 1;
+        }
         if (!ok) {
             GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
         }
         GGML_ASSERT(ok);
+    }
+
+    if (profile) {
+        std::lock_guard<std::mutex> lock(g_sycl_op_profile_mu);
+        g_sycl_op_profile_graphs += 1;
+    }
+    if (profile) {
+        sycl_op_profile_dump(false);
     }
 }
 

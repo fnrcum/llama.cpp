@@ -318,30 +318,39 @@ vec_dot_q1_0_q8_1(const void *__restrict__ vbq,
 
     const block_q1_0 * bq1_0 = (const block_q1_0 *) vbq;
 
-    const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
-    const float        d1          = bq1_0->d;
-    const int          v           = get_int_from_uint8_aligned(bq1_0->qs, iqs);
-
-    int vi_bytes[8];
-#pragma unroll
-    for (int j = 0; j < 8; ++j) {
-        const int shift = j * 4;
-        const int bits4 = (v >> shift) & 0x0F;
-        const int b0    = (bits4 & 0x01) ? 1 : -1;
-        const int b1    = (bits4 & 0x02) ? 1 : -1;
-        const int b2    = (bits4 & 0x04) ? 1 : -1;
-        const int b3    = (bits4 & 0x08) ? 1 : -1;
-        vi_bytes[j]     = (b0 & 0xFF) | ((b1 & 0xFF) << 8) | ((b2 & 0xFF) << 16) | ((b3 & 0xFF) << 24);
-    }
+    // Match CUDA: one contiguous 32-elem chunk per iqs, LUT unpack via byte permute.
+    const float            d1           = bq1_0->d;
+    const int16_t *        qs           = (const int16_t *) bq1_0->qs + iqs * 2;
+    const block_q8_1 *     bq8_1_chunk  = bq8_1 + iqs;
 
     int sumi = 0;
 #pragma unroll
-    for (int j = 0; j < 8; ++j) {
-        const int u = get_int_from_int8_aligned(bq8_1_chunk->qs, j);
-        sumi        = ggml_sycl_dp4a(vi_bytes[j], u, sumi);
+    for (int j = 0; j < 2; ++j) {
+        const unsigned int q = (unsigned int) (uint16_t) qs[j];
+
+        const int u0 = get_int_b4(bq8_1_chunk->qs, j * 4 + 0);
+        const int u1 = get_int_b4(bq8_1_chunk->qs, j * 4 + 1);
+        const int u2 = get_int_b4(bq8_1_chunk->qs, j * 4 + 2);
+        const int u3 = get_int_b4(bq8_1_chunk->qs, j * 4 + 3);
+
+        const unsigned int n0 = dpct::byte_level_permute(0x11100100u, 0x11100100u, q);
+        const unsigned int n1 = dpct::byte_level_permute(0x11100100u, 0x11100100u, q >> 2);
+        const unsigned int s0 = dpct::byte_level_permute(0x01FFu, 0x01FFu, n0);
+        const unsigned int s1 = dpct::byte_level_permute(0x01FFu, 0x01FFu, n1);
+        const unsigned int s2 = dpct::byte_level_permute(0x01FFu, 0x01FFu, n0 >> 16);
+        const unsigned int s3 = dpct::byte_level_permute(0x01FFu, 0x01FFu, n1 >> 16);
+        const int v0 = (int) dpct::byte_level_permute(s0, s1, 0x5410u);
+        const int v1 = (int) dpct::byte_level_permute(s0, s1, 0x7632u);
+        const int v2 = (int) dpct::byte_level_permute(s2, s3, 0x5410u);
+        const int v3 = (int) dpct::byte_level_permute(s2, s3, 0x7632u);
+
+        sumi = ggml_sycl_dp4a(v0, u0, sumi);
+        sumi = ggml_sycl_dp4a(v1, u1, sumi);
+        sumi = ggml_sycl_dp4a(v2, u2, sumi);
+        sumi = ggml_sycl_dp4a(v3, u3, sumi);
     }
 
-    return d1 * bq8_1_chunk->ds[0] * sumi;
+    return d1 * float(bq8_1_chunk->ds[0]) * sumi;
 }
 
 // VDR = vec dot ratio, how many contiguous integers each thread processes when the vec dot kernel is called
@@ -393,6 +402,38 @@ template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_Q4_0> {
         }
 
         return vec_dot_q4_0_q8_1_impl(v, u, d, *q8_1_ds);
+    };
+};
+
+template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_Q2_0> {
+    static constexpr ggml_type gtype = GGML_TYPE_Q2_0;
+
+    using q2_0_block  = ggml_sycl_reordered::block_q_t<GGML_TYPE_Q2_0>;
+    using q2_0_traits = typename q2_0_block::traits;
+
+    __dpct_inline__ float operator()(const void * __restrict__ vbq, const std::pair<int, int> ibx_offset,
+                                     const std::pair<int, int> d_offset, const int8_t * q8_1_quant_ptr,
+                                     const sycl::half2 * q8_1_ds, const int & iqs) {
+        const uint8_t * qs = static_cast<const uint8_t *>(vbq) + ibx_offset.first + iqs * 8;
+        const ggml_half d  = *reinterpret_cast<const ggml_half *>(static_cast<const uint8_t *>(vbq) + d_offset.first);
+        const int8_t *  q8 = q8_1_quant_ptr + iqs * QK8_1;
+        const float     d2 = d;
+        const float     d8 = float(q8_1_ds[iqs][0]);
+
+        int sumi = 0;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const uint8_t q  = qs[j];
+            const int     u  = get_int_b4(q8, j);
+            int           vi = 0;
+            vi |= ((((int) (q >> 0) & 3) - 1) & 0xFF) <<  0;
+            vi |= ((((int) (q >> 2) & 3) - 1) & 0xFF) <<  8;
+            vi |= ((((int) (q >> 4) & 3) - 1) & 0xFF) << 16;
+            vi |= ((((int) (q >> 6) & 3) - 1) & 0xFF) << 24;
+            sumi = ggml_sycl_dp4a(vi, u, sumi);
+        }
+
+        return d2 * d8 * sumi;
     };
 };
 
@@ -661,38 +702,6 @@ template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K> {
 #define VDR_Q2_0_Q8_1_MMVQ 1
 
 template <int vdr>
-static __dpct_inline__ float vec_dot_q2_0_q8_1_impl(
-    const int * v,
-    const int * u,
-    const float & d2,
-    const sycl::half2 & ds8) {
-    int sumi = 0;
-
-#pragma unroll
-    for (int i = 0; i < vdr; ++i) {
-#pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            const uint8_t q = (uint8_t) ((uint32_t) v[i] >> (8 * j));
-
-            // unpack 2-bit values to byte lanes (0..3), then apply zero-point
-            // correction with ds8f.y() below, mirroring the q4_0 style.
-            int vi = 0;
-            vi |= (((q >> 0) & 0x3) & 0xFF) << 0;
-            vi |= (((q >> 2) & 0x3) & 0xFF) << 8;
-            vi |= (((q >> 4) & 0x3) & 0xFF) << 16;
-            vi |= (((q >> 6) & 0x3) & 0xFF) << 24;
-
-            sumi = dpct::dp4a(vi, u[4 * i + j], sumi);
-        }
-    }
-
-    const sycl::float2 ds8f = ds8.convert<float, sycl::rounding_mode::automatic>();
-    // q2_0 has zero-point 1. Scale ds8f.y() by processed-lane ratio,
-    // consistent with q4_0's explicit zero-point subtraction style.
-    return d2 * (sumi * ds8f.x() - ((float) vdr / (float) QI2_0) * ds8f.y());
-}
-
-template <int vdr>
 static __dpct_inline__ float vec_dot_q4_0_q8_1_impl(const int * v, const int * u, const float & d4,
                                                     const sycl::half2 & ds8) {
     int sumi = 0;
@@ -922,33 +931,26 @@ vec_dot_q2_0_q8_1(const void *__restrict__ vbq,
 
     const block_q2_0 * bq2_0 = (const block_q2_0 *) vbq;
 
-    int v[2 * VDR_Q2_0_Q8_1_MMVQ];
-    int u[8 * VDR_Q2_0_Q8_1_MMVQ];
+    // Contiguous 32-elem half per iqs (CUDA layout). Unpack 2-bit crumbs to
+    // signed bytes (-1,0,1,2) without software byte_perm - cheaper on Intel.
+    const float        d2          = bq2_0->d;
+    const uint8_t *    qs          = bq2_0->qs + iqs * 8;
+    const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
 
+    int sumi = 0;
 #pragma unroll
-    for (int i = 0; i < VDR_Q2_0_Q8_1_MMVQ; ++i) {
-        const int base = 4 * (iqs + i);
-
-        // Q2_0 has QK2_0 = 64 and uses 2 x QK8_1 blocks on the RHS.
-        v[2 * i + 0] = get_int_from_uint8(bq2_0->qs, iqs + i);
-        v[2 * i + 1] = get_int_from_uint8(bq2_0->qs, iqs + i + QI2_0);
-
-        u[8 * i + 0] = get_int_from_int8_aligned(bq8_1[0].qs, base + 0);
-        u[8 * i + 1] = get_int_from_int8_aligned(bq8_1[0].qs, base + 1);
-        u[8 * i + 2] = get_int_from_int8_aligned(bq8_1[0].qs, base + 2);
-        u[8 * i + 3] = get_int_from_int8_aligned(bq8_1[0].qs, base + 3);
-
-        u[8 * i + 4] = get_int_from_int8_aligned(bq8_1[1].qs, base + 0);
-        u[8 * i + 5] = get_int_from_int8_aligned(bq8_1[1].qs, base + 1);
-        u[8 * i + 6] = get_int_from_int8_aligned(bq8_1[1].qs, base + 2);
-        u[8 * i + 7] = get_int_from_int8_aligned(bq8_1[1].qs, base + 3);
+    for (int j = 0; j < 8; ++j) {
+        const uint8_t q  = qs[j];
+        const int     u  = get_int_b4(bq8_1_chunk->qs, j);
+        int           vi = 0;
+        vi |= ((((int) (q >> 0) & 3) - 1) & 0xFF) <<  0;
+        vi |= ((((int) (q >> 2) & 3) - 1) & 0xFF) <<  8;
+        vi |= ((((int) (q >> 4) & 3) - 1) & 0xFF) << 16;
+        vi |= ((((int) (q >> 6) & 3) - 1) & 0xFF) << 24;
+        sumi = ggml_sycl_dp4a(vi, u, sumi);
     }
 
-    const float sum0 = vec_dot_q2_0_q8_1_impl<VDR_Q2_0_Q8_1_MMVQ>(
-        v + 0, u + 0, bq2_0->d, bq8_1[0].ds);
-    const float sum1 = vec_dot_q2_0_q8_1_impl<VDR_Q2_0_Q8_1_MMVQ>(
-        v + VDR_Q2_0_Q8_1_MMVQ, u + 4 * VDR_Q2_0_Q8_1_MMVQ, bq2_0->d, bq8_1[1].ds);
-    return sum0 + sum1;
+    return d2 * float(bq8_1_chunk->ds[0]) * sumi;
 }
 
 static __dpct_inline__ float

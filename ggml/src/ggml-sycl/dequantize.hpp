@@ -847,6 +847,32 @@ static void dequantize_block_q4_0_reorder(const void * __restrict__ vx, dst_t * 
 
 }
 
+template<typename dst_t>
+static void dequantize_block_q2_0_reorder(const void * __restrict__ vx, dst_t * __restrict__ yy, int64_t k,
+                                  const sycl::nd_item<3> &item_ct1) {
+    const int64_t i = item_ct1.get_group(2);
+    const int64_t tid = item_ct1.get_local_id(2);
+    const int lane_ib = i * WARP_SIZE + tid;
+
+    if (lane_ib >= k / QK2_0) {
+        return;
+    }
+
+    dst_t * y_ptr = yy + lane_ib * QK2_0;
+    auto qs = (const uint8_t *) vx + lane_ib * (QK2_0 / 4);
+    auto s_ptr = (const sycl::half *) ((const uint8_t *) vx + k / 4) + lane_ib;
+    const float d = float(*s_ptr);
+
+#pragma unroll
+    for (int l = 0; l < QK2_0 / 4; ++l) {
+        const uint8_t vq = qs[l];
+        y_ptr[4 * l + 0] = d * (((vq >> 0) & 3) - 1);
+        y_ptr[4 * l + 1] = d * (((vq >> 2) & 3) - 1);
+        y_ptr[4 * l + 2] = d * (((vq >> 4) & 3) - 1);
+        y_ptr[4 * l + 3] = d * (((vq >> 6) & 3) - 1);
+    }
+}
+
 // Dequantize Q8_0 from reorder layout: [all qs (k bytes)][all d values]
 // Each thread handles one block of QK8_0 elements.
 template<typename dst_t>

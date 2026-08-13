@@ -253,13 +253,14 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
         return BEST_FATTN_KERNEL_ONEDNN;
     }
 
-    // If there are no tensor cores available, use the generic tile kernel:
+    // Prefer VEC for small batches. On Intel Arc, TILE D=256 dominated decode
+    // (~70% in SYCL_OP_PROFILE) when F16+GQA fell through to TILE (CUDA Pascal
+    // behavior). VEC is faster for single-token decode here; keep TILE for
+    // larger query batches where its occupancy wins.
     if (can_use_vector_kernel) {
         if (!ggml_is_quantized(K->type) && !ggml_is_quantized(V->type)) {
-            if (Q->ne[1] == 1) {
-                if (!gqa_opt_applies) {
-                    return BEST_FATTN_KERNEL_VEC;
-                }
+            if (Q->ne[1] <= 2) {
+                return BEST_FATTN_KERNEL_VEC;
             }
         } else {
             if (Q->ne[1] <= 2) {
@@ -297,6 +298,11 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
             delta = cur_nkv - last_nkv_d512;
             last_nkv_d512 = cur_nkv;
         }
+        // stderr so llama-bench (-log-disable) still shows dispatch
+        fprintf(stderr, "[FA-DISP] #%d %s D=%d n_q=%lld n_kv=%lld delta=%lld\n",
+                fa_call_seq, kname, Dk,
+                (long long) dst->src[0]->ne[1],
+                (long long)cur_nkv, (long long)delta);
         GGML_LOG_INFO("[FA-DISP] #%d %s D=%d n_kv=%lld delta=%lld "
                 "V_ne1=%lld\n",
                 fa_call_seq, kname, Dk,
