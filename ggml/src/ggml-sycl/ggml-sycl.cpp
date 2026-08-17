@@ -48,6 +48,9 @@
 #    include <sycl/ext/oneapi/virtual_mem/virtual_mem.hpp>
 #    define GGML_SYCL_SUPPORT_VMM
 #endif
+#if defined(__INTEL_LLVM_COMPILER)
+    #define GGML_SYCL_DMMV_HAS_ESIMD
+#endif
 #include <sycl/half_type.hpp>
 
 #include "ggml.h"
@@ -78,6 +81,7 @@
 #include "ggml-sycl/fill.hpp"
 #include "ggml-sycl/cumsum.hpp"
 #include "ggml-sycl/diag.hpp"
+#include "ggml-sycl/opt-step.hpp"
 #include "ggml-sycl/solve_tri.hpp"
 #include "ggml-sycl/gated_delta_net.hpp"
 #include "ggml-sycl/pool.hpp"
@@ -97,6 +101,7 @@ int g_ggml_sycl_fa_decode_kernel = GGML_SYCL_FA_DECODE_AUTO;
 int g_ggml_sycl_enable_mkl_fa = 1;
 int g_ggml_sycl_enable_vmm = 1;
 int g_ggml_sycl_enable_fusion = 1;
+int g_ggml_sycl_enable_esimd = 1;
 int g_ggml_sycl_prioritize_dmmv = 0;
 int g_ggml_sycl_use_async_mem_op = 0;
 int g_ggml_sycl_use_async_mem_op_requested = 1;
@@ -374,6 +379,7 @@ static void ggml_check_sycl() try {
         g_ggml_sycl_enable_mkl_fa = ggml_sycl_get_env("GGML_SYCL_ENABLE_MKL_FA", 1);
         g_ggml_sycl_enable_vmm = ggml_sycl_get_env("GGML_SYCL_ENABLE_VMM", 1);
         g_ggml_sycl_enable_fusion = ggml_sycl_get_env("GGML_SYCL_ENABLE_FUSION", 1);
+        g_ggml_sycl_enable_esimd = ggml_sycl_get_env("GGML_SYCL_ENABLE_ESIMD", 1);
         g_ggml_sycl_prioritize_dmmv = ggml_sycl_get_env("GGML_SYCL_PRIORITIZE_DMMV", 0);
 
         g_ggml_sycl_dev2dev_memcpy = ggml_sycl_get_env("GGML_SYCL_DEV2DEV_MEMCPY", DEV2DEV_MEMCPY_SYCL);
@@ -472,6 +478,12 @@ static void ggml_check_sycl() try {
 #endif
 
         GGML_LOG_INFO("  GGML_SYCL_ENABLE_FUSION: %d\n", g_ggml_sycl_enable_fusion);
+
+#if defined(__INTEL_LLVM_COMPILER)
+        GGML_LOG_INFO("  GGML_SYCL_ENABLE_ESIMD: %d\n", g_ggml_sycl_enable_esimd);
+#else
+        GGML_LOG_INFO("  GGML_SYCL_ENABLE_ESIMD: %d disabled by compile flag\n", g_ggml_sycl_enable_esimd);
+#endif
 
         GGML_LOG_INFO("  GGML_SYCL_PRIORITIZE_DMMV: %d\n", g_ggml_sycl_prioritize_dmmv);
 
@@ -1574,12 +1586,8 @@ static ggml_backend_buffer_t ggml_backend_sycl_host_buffer_type_alloc_buffer(ggm
 }
 
 static size_t ggml_backend_sycl_host_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
-    static size_t max_size = -1;
-    if (max_size == (size_t)-1) {
-        ggml_backend_sycl_device_context * dev_ctx = (ggml_backend_sycl_device_context *) buft->device->context;
-        max_size = dpct::dev_mgr::instance().get_device(dev_ctx->device).get_max_mem_alloc_size();
-    }
-    return max_size;
+    ggml_backend_sycl_device_context * dev_ctx = (ggml_backend_sycl_device_context *) buft->device->context;
+    return dpct::dev_mgr::instance().get_device(dev_ctx->device).get_max_mem_alloc_size();
 }
 
 ggml_backend_buffer_type_t ggml_backend_sycl_host_buffer_type() {
@@ -2802,21 +2810,15 @@ inline void ggml_sycl_op_mul_mat_sycl(
         else
 #endif
         {
-            ggml_sycl_pool_alloc<sycl::half> dst_f16(ctx.pool(), row_diff * src1_ncols);
-
-            const sycl::half alpha_f16 = 1.0f;
-            const sycl::half beta_f16  = 0.0f;
+            const float alpha = 1.0f;
+            const float beta  = 0.0f;
             SYCL_CHECK(CHECK_TRY_ERROR(dpct::gemm(
                 *stream, oneapi::mkl::transpose::trans,
                 oneapi::mkl::transpose::nontrans, row_diff, src1_ncols, ne10,
-                &alpha_f16, src0_ptr, dpct::library_data_t::real_half, ne00,
-                src1_ptr, dpct::library_data_t::real_half, ne10, &beta_f16,
-                dst_f16.get(), dpct::library_data_t::real_half, ldc,
-                dpct::library_data_t::real_half)));
-            scope_op_debug_print scope_dbg_print(__func__, "/to_fp32_sycl", dst, /*num_src=*/2,
-                                                 " : converting dst to fp32");
-            const to_fp32_sycl_t to_fp32_sycl = ggml_get_to_fp32_sycl(GGML_TYPE_F16, dst);
-            to_fp32_sycl(dst_f16.get(), dst_dd_i, row_diff*src1_ncols, stream);
+                &alpha, src0_ptr, dpct::library_data_t::real_half, ne00,
+                src1_ptr, dpct::library_data_t::real_half, ne10, &beta,
+                dst_dd_i, dpct::library_data_t::real_float, ldc,
+                dpct::library_data_t::real_float)));
         }
     } else {
         ggml_sycl_pool_alloc<float> src0_ddq_as_f32(ctx.pool());
@@ -3867,6 +3869,22 @@ inline bool ggml_sycl_supports_reorder_mmvq(enum ggml_type type) {
     }
 }
 
+static bool ggml_sycl_supports_reorder_esimd(enum ggml_type type) {
+#ifdef GGML_SYCL_DMMV_HAS_ESIMD
+    switch (type) {
+        case GGML_TYPE_Q3_K:
+        case GGML_TYPE_Q4_K:
+        case GGML_TYPE_Q6_K:
+            return true;
+        default:
+            return false;
+    }
+#else
+    GGML_UNUSED(type);
+    return false;
+#endif
+}
+
 static bool ggml_sycl_supports_dmmv(enum ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q1_0:
@@ -4609,19 +4627,22 @@ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
     use_mul_mat_q = use_mul_mat_q && (src1->ne[1] <= MMQ_MAX_BATCH_SIZE);
 #endif // SYCL_USE_XMX
 
-    // Dispatch becomes obscure with the reorder, MMVQ when the reorder optimization
-    // is enabled takes precedence over DMMV, the current if-else implementation
-    // requires disabling DMMV if both conditions are met
+    // When reorder is enabled, both ESIMD, MMVQ and DMMV kernels may be used. For
+    // best performance use ESIMD when supported, followed by MMVQ, and finally DMMV.
+    // But the reordered ESIMD path cannot be used without reordered MMVQ. A later
+    // multi-token call (ne[1] in 2..8) will take the MMVQ path and it would read the
+    // reordered bytes as if they were still the unreordered layout.
 
     if (!g_ggml_sycl_prioritize_dmmv && ((should_reorder_tensor(ctx, dst) &&
                                           ggml_sycl_supports_reorder_mmvq(src0->type)))) {
-      // Arc770 get benefit with Q4_0 by skipping it.
-      if (!(ggml_sycl_info().devices[ctx.device].hw_info.arch ==
-                gpu_arch::intel_gpu_acm_g10 &&
-            src0->type == GGML_TYPE_Q4_0)) {
-        use_dequantize_mul_mat_vec =
-            use_dequantize_mul_mat_vec && !use_mul_mat_vec_q;
-      }
+        bool use = g_ggml_sycl_enable_esimd && ggml_sycl_supports_reorder_esimd(src0->type);
+        // Arc770 get benefit with Q4_0 by skipping MMVQ path
+        if (!(ggml_sycl_info().devices[ctx.device].hw_info.arch ==
+                    gpu_arch::intel_gpu_acm_g10 &&
+                src0->type == GGML_TYPE_Q4_0)) {
+            use = use || !use_mul_mat_vec_q;
+        }
+        use_dequantize_mul_mat_vec = use_dequantize_mul_mat_vec && use;
     }
 
     if (!split && src0->type == GGML_TYPE_F16 && ggml_is_permuted(src0) && ggml_is_permuted(src1) && src1->ne[1] == 1) {
@@ -4658,6 +4679,66 @@ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
     }
 }
 
+// Fused dense-FFN mat-vec for the {mul_mat(gate), mul_mat(up), GLU} subgraph at node_idx.
+// Returns false if it declined, in which case the caller runs the three nodes normally.
+static bool ggml_sycl_mul_mat_glu_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
+    if (!ggml_sycl_can_fuse(cgraph, node_idx, { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU }, {})) {
+        return false;
+    }
+
+    ggml_tensor *       glu  = cgraph->nodes[node_idx + 2];
+    ggml_tensor *       gate = glu->src[0];
+    ggml_tensor *       up   = glu->src[1];
+    const ggml_tensor * wu   = up->src[0];
+    const ggml_tensor * wg   = gate->src[0];
+    const ggml_tensor * act  = up->src[1];
+
+    // this writes glu->data directly rather than the per-device row slices that
+    // ggml_sycl_op_mul_mat() stitches back together, so it cannot serve split weights
+    if (ggml_backend_buffer_is_sycl_split(wu->buffer) || ggml_backend_buffer_is_sycl_split(wg->buffer)) {
+        return false;
+    }
+
+    // with DMMV prioritised the unfused path would not have gone through mmvq at all
+    if (g_ggml_sycl_prioritize_dmmv) {
+        return false;
+    }
+
+    // install the reorder (SoA) layout the fused kernel needs, as the unfused mmvq path would;
+    // a no-op once done. after the bail checks so a declined op does not pay for it.
+    opt_for_reorder(&ctx, wu, act, up, mul_mat_algo::MMVQ);
+    opt_for_reorder(&ctx, wg, act, gate, mul_mat_algo::MMVQ);
+
+    const auto * extra_u = static_cast<const ggml_tensor_extra_gpu *>(wu->extra);
+    const auto * extra_g = static_cast<const ggml_tensor_extra_gpu *>(wg->extra);
+    if (!extra_u || !extra_g || !extra_u->optimized_feature.reorder || !extra_g->optimized_feature.reorder) {
+        return false;
+    }
+
+    // log the up mat-mul: glu's own srcs are the two intermediates the fusion never materialises
+    scope_op_debug_print scope_dbg_print(__func__, up, /*num_src=*/2, " : fused with gate + GLU");
+
+    const int64_t ne00 = wu->ne[0];
+    const int64_t ne11 = act->ne[1];
+
+    const queue_ptr stream           = ctx.stream();
+    const int       src1_padded_cols = GGML_PAD((int) ne00, MATRIX_ROW_PADDING);
+
+    // one activation, quantized once and fully consumed into src1_ddq before the GEMV on this
+    // in-order queue, so glu->data aliasing the dead activation needs no memory-range check
+    ggml_sycl_pool_alloc<char> src1_q8_alloc(ctx.pool(),
+                                             (size_t) ne11 * src1_padded_cols * sizeof(block_q8_1) / QK8_1);
+    char *                     src1_ddq = src1_q8_alloc.get();
+
+    quantize_row_q8_1_sycl<quantize_and_reorder_q8_1_soa>((const float *) act->data, src1_ddq, (int) ne00, (int) ne11,
+                                                          src1_padded_cols, stream);
+
+    return ggml_sycl_mul_mat_vec_q_glu_reorder(wu->type, ggml_get_glu_op(glu), wu->data, wg->data, src1_ddq,
+                                               (float *) glu->data, (int) ne00, (int) wu->ne[1], (int) ne11,
+                                               /*stride_col_y_bytes=*/src1_padded_cols * (int) sizeof(block_q8_1) /
+                                                   QK8_1,
+                                               /*stride_col_dst=*/(int) glu->ne[0], stream);
+}
 
 __dpct_inline__ static void k_copy_src1_to_contiguous(
     const char *__restrict__ src1_original, char *__restrict__ src1_contiguous,
@@ -5402,6 +5483,12 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
         case GGML_OP_GATED_DELTA_NET:
             ggml_sycl_gated_delta_net(ctx, dst);
             break;
+        case GGML_OP_OPT_STEP_ADAMW:
+            ggml_sycl_opt_step_adamw(ctx, dst);
+            break;
+        case GGML_OP_OPT_STEP_SGD:
+            ggml_sycl_opt_step_sgd(ctx, dst);
+            break;
         case GGML_OP_SSM_CONV:
             ggml_sycl_ssm_conv(ctx, dst);
             break;
@@ -5730,6 +5817,17 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
                 e.count += 1;
             }
             i++;
+            continue;
+        }
+        if (node->op == GGML_OP_UNARY &&
+            ggml_sycl_can_fuse(cgraph, i, { GGML_OP_UNARY, GGML_OP_MUL }, { ggml_get_unary_op(node) })) {
+            ggml_sycl_op_unary_mul_fused(*sycl_ctx, node, cgraph->nodes[i + 1]);
+            i++;
+            continue;
+        }
+
+        if (node->op == GGML_OP_MUL_MAT && ggml_sycl_mul_mat_glu_mmvq_fused(*sycl_ctx, cgraph, i)) {
+            i += 2;
             continue;
         }
 
@@ -6379,6 +6477,8 @@ static bool do_ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, cons
         case GGML_OP_RWKV_WKV7:
         case GGML_OP_GATED_LINEAR_ATTN:
         case GGML_OP_GATED_DELTA_NET:
+        case GGML_OP_OPT_STEP_ADAMW:
+        case GGML_OP_OPT_STEP_SGD:
             return true;
         case GGML_OP_SSM_CONV:
             return op->type == GGML_TYPE_F32 &&
