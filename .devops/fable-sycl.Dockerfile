@@ -118,8 +118,9 @@ RUN mkdir /tmp/neo/ && cd /tmp/neo/ \
   && wget https://github.com/intel/compute-runtime/releases/download/$COMPUTE_RUNTIME_VERSION/libze-intel-gpu1_${COMPUTE_RUNTIME_VERSION_FULL}_amd64.deb \
   && dpkg --install *.deb
 
+# ffmpeg/ffprobe: stb_image cannot decode WebP; mtmd uses ffmpeg for WebP/video
 RUN apt-get update \
-    && apt-get install -y libgomp1 curl \
+    && apt-get install -y libgomp1 curl ffmpeg \
     && apt autoremove -y \
     && apt clean -y \
     && rm -rf /tmp/* /var/tmp/* \
