@@ -493,3 +493,9 @@ Backported open upstream PRs (private fork):
 - #25214 `--gpu-heartbeat` (SYCL/Vulkan)
 
 Skipped / deferred: #26779 (draft q4_K FFN fuse), #26631 (all-backend AI-generated).
+
+## 2026-09-21 upstream sync
+
+- Merged upstream/master (~b11070 era, ~300 commits) into master.
+- Kept fork SYCL FA_DECODE_KERNEL / MoE graph / TBQ4 CUDA FA paths.
+- Took upstream SYCL B70 >19.3GB alloc workaround, memtrace, residual fusions, CUDA SM70/FA fixes.

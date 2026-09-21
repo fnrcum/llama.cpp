@@ -2748,6 +2748,34 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
     GGML_UNUSED(ctx);
 }
 
+// vec_dot_q_sycl_t adapters for the IQ vec_dots that take their codebook tables as extra
+// arguments: bind the constant tables here (as vec_dot_iq2_s_q8_1 / vec_dot_iq1_m_q8_1 already do
+// internally) so they can be used as template arguments of mul_mat_vec_q_moe.
+static __dpct_inline__ float vec_dot_iq2_xxs_q8_1_moe(const void * __restrict__ vbq,
+                                                      const block_q8_1 * __restrict__ bq8_1, const int & iqs) {
+    return vec_dot_iq2_xxs_q8_1(vbq, bq8_1, iqs, iq2xxs_grid, ksigns_iq2xs, kmask_iq2xs);
+}
+
+static __dpct_inline__ float vec_dot_iq2_xs_q8_1_moe(const void * __restrict__ vbq,
+                                                     const block_q8_1 * __restrict__ bq8_1, const int & iqs) {
+    return vec_dot_iq2_xs_q8_1(vbq, bq8_1, iqs, iq2xs_grid, ksigns64);
+}
+
+static __dpct_inline__ float vec_dot_iq3_xxs_q8_1_moe(const void * __restrict__ vbq,
+                                                      const block_q8_1 * __restrict__ bq8_1, const int & iqs) {
+    return vec_dot_iq3_xxs_q8_1(vbq, bq8_1, iqs, iq3xxs_grid, ksigns64);
+}
+
+static __dpct_inline__ float vec_dot_iq3_s_q8_1_moe(const void * __restrict__ vbq,
+                                                    const block_q8_1 * __restrict__ bq8_1, const int & iqs) {
+    return vec_dot_iq3_s_q8_1(vbq, bq8_1, iqs, iq3s_grid);
+}
+
+static __dpct_inline__ float vec_dot_iq1_s_q8_1_moe(const void * __restrict__ vbq,
+                                                    const block_q8_1 * __restrict__ bq8_1, const int & iqs) {
+    return vec_dot_iq1_s_q8_1(vbq, bq8_1, iqs, iq1s_grid_gpu);
+}
+
 // Fused MoE expert GEMV over (token, expert-slot) pairs. group(1) enumerates the routed rows of a
 // decode-sized batch: token = pair / n_ids, slot = pair % n_ids. ne11 == 1 means all slots of a token
 // share one src1 row (gate/up proj); ne11 == n_ids means one src1 row per slot (down proj).
@@ -2936,6 +2964,51 @@ bool ggml_sycl_mul_mat_vec_q_id(
                 vx_base, vy, ids_dev, dst_base, ncols, nrows,
                 n_ids, n_tokens, ne11, ids_s0, ids_s1,
                 expert_weight_stride, dst_slot_stride, dst_token_stride, src1_qrow_stride, stream);
+            return true;
+        case GGML_TYPE_IQ2_XXS:
+            launch_mul_mat_vec_q_moe<QK_K, QI2_XXS/2, block_iq2_xxs, VDR_IQ2_XXS_Q8_1_MMVQ, vec_dot_iq2_xxs_q8_1_moe>(
+                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
+            return true;
+        case GGML_TYPE_IQ2_XS:
+            launch_mul_mat_vec_q_moe<QK_K, QI2_XS/2, block_iq2_xs, VDR_IQ2_XS_Q8_1_MMVQ, vec_dot_iq2_xs_q8_1_moe>(
+                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
+            return true;
+        case GGML_TYPE_IQ2_S:
+            launch_mul_mat_vec_q_moe<QK_K, QI2_S/2, block_iq2_s, VDR_IQ2_S_Q8_1_MMVQ, vec_dot_iq2_s_q8_1>(
+                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
+            return true;
+        case GGML_TYPE_IQ3_XXS:
+            launch_mul_mat_vec_q_moe<QK_K, QI3_XXS/2, block_iq3_xxs, VDR_IQ3_XXS_Q8_1_MMVQ, vec_dot_iq3_xxs_q8_1_moe>(
+                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
+            return true;
+        case GGML_TYPE_IQ3_S:
+            launch_mul_mat_vec_q_moe<QK_K, QI3_S/2, block_iq3_s, VDR_IQ3_S_Q8_1_MMVQ, vec_dot_iq3_s_q8_1_moe>(
+                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
+            return true;
+        case GGML_TYPE_IQ1_S:
+            launch_mul_mat_vec_q_moe<QK_K, QI1_S, block_iq1_s, VDR_IQ1_S_Q8_1_MMVQ, vec_dot_iq1_s_q8_1_moe>(
+                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
+            return true;
+        case GGML_TYPE_IQ1_M:
+            launch_mul_mat_vec_q_moe<QK_K, QI1_S, block_iq1_m, VDR_IQ1_M_Q8_1_MMVQ, vec_dot_iq1_m_q8_1>(
+                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
+            return true;
+        case GGML_TYPE_IQ4_NL:
+            launch_mul_mat_vec_q_moe<QK4_NL, QI4_NL, block_iq4_nl, VDR_IQ4_NL_Q8_1_MMVQ, vec_dot_iq4_nl_q8_1>(
+                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
+            return true;
+        case GGML_TYPE_IQ4_XS:
+            launch_mul_mat_vec_q_moe<QK_K, QI4_XS/4, block_iq4_xs, VDR_IQ4_XS_Q8_1_MMVQ, vec_dot_iq4_xs_q8_1>(
+                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
             return true;
         default:
             return false;

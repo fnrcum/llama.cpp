@@ -70,7 +70,7 @@ void ggml_cuda_flash_attn_ext_mma_tbq4_case(ggml_backend_cuda_context & ctx, ggm
     fattn_kernel_t fattn_kernel;
     if (logit_softcap == 0.0f) {
         constexpr bool use_logit_softcap = false;
-        fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, tK, tV>;
+        fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, /*use_sparse=*/false, tK, tV>;
 
 #if !defined(GGML_USE_MUSA) && !defined(GGML_USE_HIP)
         static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
@@ -81,7 +81,7 @@ void ggml_cuda_flash_attn_ext_mma_tbq4_case(ggml_backend_cuda_context & ctx, ggm
 #endif
     } else {
         constexpr bool use_logit_softcap = true;
-        fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, tK, tV>;
+        fattn_kernel = flash_attn_ext_f16<DKQ, DV, ncols1, ncols2, use_logit_softcap, V_is_K_view, /*use_sparse=*/false, tK, tV>;
 
 #if !defined(GGML_USE_MUSA) && !defined(GGML_USE_HIP)
         static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = {false};
