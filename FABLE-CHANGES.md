@@ -505,3 +505,10 @@ Skipped / deferred: #26779 (draft q4_K FFN fuse), #26631 (all-backend AI-generat
 - #28985 sycl: avoid slow oneDNN reference matmul/FA + probe at init
 - #29107 sycl: IQ3 code reorder (B70)
 - #27828 cuda: always MMVQ for MUL_MAT_ID on sm_60 (P40-class)
+
+### Build fixes after merge/cherry-picks
+
+- `ggml-sycl/mmvq.cpp`: IQ* MoE MMVQ launches used pre-fused args (`n_experts_used` /
+  `dst_row_stride` / `src1_row_stride`); retarget to current
+  `n_ids/n_tokens/.../dst_slot_stride/src1_qrow_stride` signature.
+- `common/speculative.cpp`: DSpark draft used renamed `dp.n_past` -> `dp.pos0`.

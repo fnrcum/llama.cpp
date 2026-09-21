@@ -1366,7 +1366,7 @@ struct common_speculative_impl_draft_dspark : public common_speculative_impl_dra
 
             common_sampler_reset(smpls[seq_id].get());
 
-            const int32_t n = (int32_t) dp.n_past;
+            const int32_t n = (int32_t) dp.pos0;
 
             int32_t n_draft = params.n_max;
             if (dp.n_max > 0) {
