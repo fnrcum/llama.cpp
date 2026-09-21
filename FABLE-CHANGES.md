@@ -499,3 +499,9 @@ Skipped / deferred: #26779 (draft q4_K FFN fuse), #26631 (all-backend AI-generat
 - Merged upstream/master (~b11070 era, ~300 commits) into master.
 - Kept fork SYCL FA_DECODE_KERNEL / MoE graph / TBQ4 CUDA FA paths.
 - Took upstream SYCL B70 >19.3GB alloc workaround, memtrace, residual fusions, CUDA SM70/FA fixes.
+
+### Cherry-picks (open upstream PRs)
+
+- #28985 sycl: avoid slow oneDNN reference matmul/FA + probe at init
+- #29107 sycl: IQ3 code reorder (B70)
+- #27828 cuda: always MMVQ for MUL_MAT_ID on sm_60 (P40-class)
