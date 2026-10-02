@@ -77,7 +77,7 @@
 #define ggml_gemm_mxfp4_8x8_q8_0_generic ggml_gemm_mxfp4_8x8_q8_0
 #define ggml_gemm_q8_0_4x4_q8_0_generic ggml_gemm_q8_0_4x4_q8_0
 #define ggml_gemm_q8_0_4x8_q8_0_generic ggml_gemm_q8_0_4x8_q8_0
-#elif defined(__aarch64__) || defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64)
+#elif defined(__aarch64__) || defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
 // quants.c
 #define ggml_vec_dot_tbq3_0_q8_K_generic ggml_vec_dot_tbq3_0_q8_K
 #define ggml_vec_dot_tbq4_0_q8_K_generic ggml_vec_dot_tbq4_0_q8_K
