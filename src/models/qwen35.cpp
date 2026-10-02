@@ -671,7 +671,7 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
         const int64_t n_outputs     = cur->ne[1];
         const int64_t n_vocab_full  = (int64_t) model.vocab.n_tokens();
 
-        GGML_ASSERT(model.d2t->type == GGML_TYPE_I64);
+        GGML_ASSERT(model.d2t->type == GGML_TYPE_I32 || model.d2t->type == GGML_TYPE_I64);
         GGML_ASSERT(model.d2t->ne[0] == n_draft_vocab);
 
         ggml_tensor * logits = ggml_fill(
