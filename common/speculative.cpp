@@ -1413,7 +1413,7 @@ struct common_speculative_impl_draft_dspark : public common_speculative_impl_dra
     void draft(common_speculative_draft_params_vec & dparams) override {
         auto * ctx_dft = params.ctx_dft;
 
-        common_batch_clear(batch);
+        batch.clear();
 
         std::vector<int32_t> i_block_beg(n_seq, -1);
         std::vector<int32_t> n_block    (n_seq,  0);
@@ -1439,19 +1439,20 @@ struct common_speculative_impl_draft_dspark : public common_speculative_impl_dra
 
             // anchor-first block [id_last, <mask> * (block_size-1)]: submit the whole block so the
             // in-graph Markov head can key anchors off the block boundaries; keep the first n_draft
-            i_block_beg[seq_id] = batch.n_tokens;
+            i_block_beg[seq_id] = batch.size();
             n_block    [seq_id] = n_draft;
             for (int32_t i = 0; i < block_size; ++i) {
-                common_batch_add(batch, i == 0 ? dp.id_last : mask_token_id, n + i, { seq_id }, true);
+                batch.add(i == 0 ? dp.id_last : mask_token_id, n + i, seq_id, true);
             }
         }
 
-        if (batch.n_tokens == 0) {
+        if (batch.size() == 0) {
             return;
         }
 
-        if (llama_decode(ctx_dft, batch) != 0) {
-            LOG_WRN("%s: llama_decode failed\n", __func__);
+        const int ret = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+        if (ret != 0) {
+            LOG_WRN("%s: llama_process returned %d\n", __func__, ret);
             return;
         }
 
